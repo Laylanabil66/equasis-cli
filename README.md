@@ -2,7 +2,7 @@
 
 A comprehensive command-line interface for accessing Equasis maritime intelligence. This professional-grade tool provides complete vessel profiles with management details, inspection history, and ownership tracking through a clean, scriptable CLI.
 
-> **🚢 Major Update**: Now provides comprehensive vessel intelligence with 50+ data points including management companies, PSC inspections, historical names/flags, and classification details - all collected automatically from multiple Equasis tabs.
+> **Major Update**: Now provides comprehensive vessel intelligence with 50+ data points including management companies, PSC inspections, historical names/flags, and classification details - all collected automatically from multiple Equasis tabs.
 
 ## Table of Contents
 
@@ -35,6 +35,7 @@ Equasis CLI Tool is a Python-based command-line application that interfaces with
 ### Current Features
 
 #### Core Vessel Intelligence
+
 - **Comprehensive Vessel Lookup**: Get complete vessel profiles with 50+ data points from multiple Equasis tabs
 - **3-Tab Data Collection**: Automatically fetches Ship Info, Inspections, and Ship History data
 - **Management Company Details**: Current and historical management with roles and dates
@@ -45,11 +46,13 @@ Equasis CLI Tool is a Python-based command-line application that interfaces with
 - **Flag Performance**: Paris MOU and Tokyo MOU ratings, USCG targeting status
 
 #### Search & Fleet Operations
+
 - **Vessel Search by IMO**: Look up comprehensive vessel information using IMO numbers
 - **Vessel Search by Name**: Search for vessels using partial or complete names
 - **Fleet Information**: Retrieve fleet data for shipping companies
 
 #### Technical Features
+
 - **Professional Package Structure**: Modular architecture ready for distribution (Homebrew, PyPI)
 - **Multiple Output Formats**: Export data as formatted tables, structured JSON, or CSV
 - **File Output**: Save results directly to files
@@ -61,6 +64,7 @@ Equasis CLI Tool is a Python-based command-line application that interfaces with
 ### Planned Features
 
 #### Near-Term Enhancements
+
 - **Batch Processing**: Process multiple IMO numbers efficiently
 - **Data Caching**: Reduce redundant API calls with intelligent caching
 - **Enhanced Search/Fleet Parsing**: Apply comprehensive parsing to search results
@@ -68,6 +72,7 @@ Equasis CLI Tool is a Python-based command-line application that interfaces with
 - **Configuration Files**: User preferences and custom settings
 
 #### Medium-Term Goals
+
 - **Homebrew Distribution**: Native macOS installation via `brew install equasis-cli`
 - **Additional Maritime Data**: Integration with other vessel databases
 - **Export Formats**: Excel, PDF reports, specialized maritime formats
@@ -75,6 +80,7 @@ Equasis CLI Tool is a Python-based command-line application that interfaces with
 - **Fleet Intelligence**: Company-wide vessel analysis and reporting
 
 #### Advanced Features
+
 - **Maritime Intelligence Platform**: Beyond basic vessel lookup
 - **API Service**: RESTful API for integration with other maritime tools
 - **Visualization**: Charts and graphs for historical vessel data
@@ -202,7 +208,37 @@ equasis --username your_user --password your_pass vessel --imo 9074729
 
 The tool is available globally after installation via pipx. No need to activate virtual environments or navigate to specific directories.
 
-### Basic Syntax
+### Interactive Mode (Recommended)
+
+Simply type `equasis` with no arguments to enter interactive mode:
+
+```bash
+equasis
+```
+
+This launches a modern REPL-style interface where you can run multiple commands without re-authentication:
+
+```
+> vessel /imo 9074729
+> search /name "MAERSK"
+> fleet /company "MSC"
+> format json
+> status
+> help
+> exit
+```
+
+**Interactive Mode Features:**
+- **Persistent Session**: Authenticate once, run multiple queries
+- **Modern Syntax**: Use `/param value` instead of `--param value`
+- **Fast Queries**: No re-authentication between commands
+- **Built-in Help**: Type `help` to see all commands
+- **Format Control**: Set default output format or override per-command
+- **File Output**: Save results with `/output filename.ext`
+
+### Traditional CLI Mode
+
+You can also use traditional command-line syntax:
 
 ```bash
 equasis [global_options] command [command_options]
@@ -271,40 +307,136 @@ The tool includes comprehensive tab completion for zsh with intelligent suggesti
 
 ### Commands
 
-#### vessel
+#### Interactive Mode Commands
 
-Get detailed information for a specific vessel by IMO number.
+When in interactive mode (started with `equasis`), use these commands:
+
+##### vessel
+
+Get comprehensive vessel information by IMO number.
+
+```bash
+> vessel /imo 9074729
+> vessel /imo 9074729 /format json
+> vessel /imo 9074729 /output vessel_data.json
+```
+
+**Parameters:**
+- `/imo IMO_NUMBER`: Required. The IMO number of the vessel
+- `/format FORMAT`: Optional. Output format (table, json, csv)
+- `/output FILE_OR_FORMAT`: Optional. Save to file or set format
+
+##### search
+
+Search for vessels by name (partial matches supported).
+
+```bash
+> search /name "MAERSK"
+> search /name "EVER GIVEN" /format json
+> search /name "CONTAINER" /output results.csv
+```
+
+**Parameters:**
+- `/name VESSEL_NAME`: Required. Full or partial vessel name
+- `/format FORMAT`: Optional. Output format (table, json, csv)
+- `/output FILE_OR_FORMAT`: Optional. Save to file or set format
+
+##### fleet
+
+Get fleet information for a shipping company.
+
+```bash
+> fleet /company "MSC"
+> fleet /company "MAERSK LINE" /format json
+> fleet /company "COSCO" /output fleet_data.json
+```
+
+**Parameters:**
+- `/company COMPANY_NAME`: Required. Company name or identifier
+- `/format FORMAT`: Optional. Output format (table, json, csv)
+- `/output FILE_OR_FORMAT`: Optional. Save to file or set format
+
+##### format
+
+Set default output format for all commands.
+
+```bash
+> format json
+> format table
+> format csv
+```
+
+##### status
+
+Show current session status.
+
+```bash
+> status
+```
+
+Displays:
+- Connection status
+- Current output format
+- Debug mode status
+
+##### clear
+
+Clear the terminal screen.
+
+```bash
+> clear
+```
+
+##### help
+
+Show help information.
+
+```bash
+> help              # List all commands
+> help vessel       # Show help for vessel command
+> help output       # Show help for file output
+```
+
+##### exit / quit
+
+Exit interactive mode.
+
+```bash
+> exit
+> quit
+```
+
+You can also use `Ctrl+D` to exit.
+
+#### Traditional CLI Mode Commands
+
+When using traditional syntax:
+
+##### vessel
 
 ```bash
 equasis vessel --imo IMO_NUMBER
 ```
 
 **Options:**
-
 - `--imo IMO_NUMBER`: Required. The IMO number of the vessel
 
-#### search
-
-Search for vessels by name (partial matches supported).
+##### search
 
 ```bash
 equasis search --name VESSEL_NAME
 ```
 
 **Options:**
-
 - `--name VESSEL_NAME`: Required. Full or partial vessel name
 
-#### fleet
-
-Get fleet information for a shipping company.
+##### fleet
 
 ```bash
 equasis fleet --company COMPANY_NAME
 ```
 
 **Options:**
-
 - `--company COMPANY_NAME`: Required. Company name or identifier
 
 ## Output Formats
@@ -407,9 +539,68 @@ Basic CSV format for spreadsheet compatibility (basic fields only).
 
 ## Examples
 
-### Comprehensive Vessel Lookup
+### Interactive Mode Examples
+
+#### Starting Interactive Mode
+
+```bash
+# Simply run equasis with no arguments
+equasis
+```
+
+You'll see the banner and enter interactive mode:
+
+```
+ _____ _____ _   _ _____ _____ _____ _____       _____ __    _____
+|   __|     | | |  _  |   __|     |   __|     |     |  |  |     |
+|   __|  |  | | |     |__   |-   -|__   |     |   --|  |__|  |  |
+|_____|__  _|___|__|__|_____|_____|_____|     |_____|_____|_____|
+         |__|
+
+            Maritime Intelligence Tool
+                            Version 1.0.0
+
+Type 'help' for available commands or 'exit' to quit.
+Use /output with any command to save results to a file.
+
+>
+```
+
+#### Comprehensive Vessel Lookup
 
 Get complete vessel intelligence with management, inspections, and history:
+
+```bash
+> vessel /imo 9074729
+
+# Get data in JSON format
+> vessel /imo 9074729 /format json
+
+# Save to file (format auto-detected from extension)
+> vessel /imo 9074729 /output vessel_data.json
+
+# Set JSON as default format for all subsequent commands
+> format json
+> vessel /imo 9074729
+```
+
+**What you get**: Complete vessel profile including management companies, PSC inspection history, historical names/flags, classification details, and geographical tracking - all from a single command!
+
+#### Multiple Queries in One Session
+
+```bash
+> vessel /imo 9074729
+> search /name "MAERSK"
+> fleet /company "MSC"
+> status
+> exit
+```
+
+No re-authentication needed between commands!
+
+### Traditional CLI Examples
+
+#### Comprehensive Vessel Lookup
 
 ```bash
 # Using environment variables for credentials (recommended)
@@ -428,10 +619,15 @@ equasis --output json vessel --imo 8515128
 equasis --output json --output-file vessel_intelligence.json vessel --imo 8515128
 ```
 
-**What you get**: Complete vessel profile including management companies, PSC inspection history, historical names/flags, classification details, and geographical tracking - all from a single command!
+#### Search by Name
 
-### Search by Name
+Interactive mode:
+```bash
+> search /name "MAERSK"
+> search /name "EVER GIVEN" /output results.json
+```
 
+Traditional CLI:
 ```bash
 # Search for vessels with "MAERSK" in the name
 equasis search --name "MAERSK"
@@ -443,8 +639,15 @@ equasis search --name <TAB>  # Shows examples like "EVER GIVEN", "MAERSK"
 equasis search --name "EVER"
 ```
 
-### Fleet Information
+#### Fleet Information
 
+Interactive mode:
+```bash
+> fleet /company "MSC"
+> fleet /company "MAERSK LINE" /output fleet.csv
+```
+
+Traditional CLI:
 ```bash
 # Get fleet information for a company
 equasis fleet --company "MAERSK LINE"
@@ -471,8 +674,23 @@ equasis fleet --company <TAB>    # Shows major shipping companies
 equasis --output <TAB>           # Shows: table, json, csv with descriptions
 ```
 
-### Different Output Formats
+#### Different Output Formats
 
+Interactive mode:
+```bash
+# Set default format
+> format json
+> vessel /imo 9074729
+
+# Override format for one command
+> vessel /imo 9074729 /format csv
+
+# Save to file (format auto-detected)
+> vessel /imo 9074729 /output vessel_data.json
+> vessel /imo 9074729 /output vessel_data.csv
+```
+
+Traditional CLI:
 ```bash
 # JSON output
 equasis --output json vessel --imo 9074729
@@ -495,7 +713,9 @@ while read imo; do
 done < imo_list.txt
 ```
 
-### Integration with Other Tools
+#### Integration with Other Tools
+
+Traditional CLI works great with pipes:
 
 ```bash
 # Use with jq for JSON processing
@@ -512,6 +732,8 @@ equasis vessel --imo <TAB>  # Select example, then continue with pipe
 equasis vessel --imo 9074729 | head -5
 ```
 
+Interactive mode is best for exploration, traditional CLI for scripting.
+
 ## Architecture & Data Collection
 
 ### Comprehensive Intelligence Strategy
@@ -523,6 +745,7 @@ The Equasis CLI uses a **3-request multi-tab strategy** to collect comprehensive
 3. **Ship History Tab**: Historical names, flags, and ownership changes
 
 Each vessel lookup automatically:
+
 - Authenticates with Equasis using your credentials
 - Makes 3 targeted requests to different Equasis tabs
 - Parses rich HTML data structures from each tab

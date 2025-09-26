@@ -10,6 +10,8 @@ from .main import main
 from .client import EquasisClient, SimpleVesselInfo, FleetInfo
 from .parser import EquasisParser, EquasisVesselData, VesselBasicInfo
 from .formatter import OutputFormatter
+from .banner import get_version, display_banner, check_credentials, display_credentials_note
+from .interactive import InteractiveShell
 
 __version__ = "1.0.0"
 __author__ = "rhinonix"
@@ -24,5 +26,10 @@ __all__ = [
     'VesselBasicInfo',
     'SimpleVesselInfo',
     'FleetInfo',
-    'OutputFormatter'
+    'OutputFormatter',
+    'get_version',
+    'display_banner',
+    'check_credentials',
+    'display_credentials_note',
+    'InteractiveShell'
 ]

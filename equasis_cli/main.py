@@ -11,6 +11,7 @@ from dotenv import load_dotenv
 
 from .client import EquasisClient
 from .formatter import OutputFormatter
+from .banner import display_banner, display_compact_info, display_error_banner, display_success_summary, check_credentials
 
 # Load environment variables from .env file
 load_dotenv()
@@ -21,13 +22,42 @@ logger = logging.getLogger(__name__)
 
 
 def main():
-    """Main CLI entry point"""
+    """Main CLI entry point - supports both interactive and traditional modes"""
+    import sys
+
+    # Check if no arguments provided - start interactive mode
+    if len(sys.argv) == 1:
+        # No arguments - start interactive mode
+        try:
+            from .interactive import InteractiveShell
+            shell = InteractiveShell()
+            shell.cmdloop()
+            return
+        except (KeyboardInterrupt, EOFError):
+            print("\nGoodbye!")
+            return
+        except ImportError as e:
+            print(f"Error starting interactive mode: {e}")
+            print("Falling back to traditional CLI mode...")
+        except Exception as e:
+            print(f"Unexpected error in interactive mode: {e}")
+            print("Falling back to traditional CLI mode...")
+
+    # Traditional CLI mode
+    traditional_main()
+
+
+def traditional_main():
+    """Traditional CLI mode with argparse"""
     parser = argparse.ArgumentParser(description='Equasis CLI Tool for Maritime Data')
     parser.add_argument('--username', help='Equasis username (or set EQUASIS_USERNAME env var)')
     parser.add_argument('--password', help='Equasis password (or set EQUASIS_PASSWORD env var)')
     parser.add_argument('--output', choices=['table', 'json', 'csv'], default='table', help='Output format')
     parser.add_argument('--output-file', help='Output file path (optional)')
     parser.add_argument('--debug', action='store_true', help='Enable debug logging and save HTML responses')
+    parser.add_argument('--no-banner', action='store_true', help='Skip startup banner display')
+    parser.add_argument('--quiet', action='store_true', help='Minimal output mode')
+    parser.add_argument('--interactive', action='store_true', help='Start interactive mode')
 
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
 
@@ -45,6 +75,20 @@ def main():
 
     args = parser.parse_args()
 
+    # Check for interactive flag
+    if args.interactive:
+        try:
+            from .interactive import InteractiveShell
+            shell = InteractiveShell()
+            shell.cmdloop()
+            return
+        except (KeyboardInterrupt, EOFError):
+            print("\nGoodbye!")
+            return
+        except Exception as e:
+            print(f"Error starting interactive mode: {e}")
+            return
+
     # Set logging level based on debug flag
     if args.debug:
         logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
@@ -52,7 +96,11 @@ def main():
     else:
         logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
+    # Handle help display first
     if not args.command:
+        # Show banner for help display
+        if not args.no_banner and not args.quiet:
+            display_banner()
         parser.print_help()
         return
 
@@ -61,9 +109,15 @@ def main():
     password = args.password or os.getenv('EQUASIS_PASSWORD')
 
     if not username or not password:
-        print("Error: Username and password required either as arguments or environment variables")
-        print("Set EQUASIS_USERNAME and EQUASIS_PASSWORD in .env file, or use --username and --password")
+        display_error_banner("Authentication",
+                           "Username and password required either as arguments or environment variables")
         return
+
+    # Display banner after credential validation (for actual commands)
+    if not args.no_banner and not args.quiet:
+        display_banner()
+    elif not args.quiet:
+        display_compact_info()
 
     # Initialize client
     client = EquasisClient(username, password)
@@ -77,11 +131,14 @@ def main():
                 if args.output_file:
                     with open(args.output_file, 'w') as f:
                         f.write(output)
-                    print(f"Output saved to {args.output_file}")
+                    if not args.quiet:
+                        display_success_summary("Vessel Lookup", f"Data saved to {args.output_file}")
                 else:
                     print(output)
+                    if not args.quiet:
+                        display_success_summary("Vessel Lookup", f"Comprehensive data retrieved for IMO {args.imo}")
             else:
-                print(f"No vessel found with IMO: {args.imo}")
+                display_error_banner("Vessel Not Found", f"No vessel found with IMO: {args.imo}")
 
         elif args.command == 'search':
             vessels = client.search_vessel_by_name(args.name)
@@ -90,11 +147,14 @@ def main():
                 if args.output_file:
                     with open(args.output_file, 'w') as f:
                         f.write(output)
-                    print(f"Search results saved to {args.output_file}")
+                    if not args.quiet:
+                        display_success_summary("Vessel Search", f"Results saved to {args.output_file}")
                 else:
                     print(output)
+                    if not args.quiet:
+                        display_success_summary("Vessel Search", f"Found {len(vessels)} vessel(s) matching '{args.name}'")
             else:
-                print(f"No vessels found with name: {args.name}")
+                display_error_banner("Search Results", f"No vessels found with name: {args.name}")
 
         elif args.command == 'fleet':
             fleet = client.get_fleet_info(args.company)
@@ -103,16 +163,26 @@ def main():
                 if args.output_file:
                     with open(args.output_file, 'w') as f:
                         f.write(output)
-                    print(f"Fleet data saved to {args.output_file}")
+                    if not args.quiet:
+                        display_success_summary("Fleet Lookup", f"Fleet data saved to {args.output_file}")
                 else:
                     print(output)
+                    if not args.quiet:
+                        display_success_summary("Fleet Lookup", f"Fleet data retrieved for {args.company}")
             else:
-                print(f"No fleet found for company: {args.company}")
+                display_error_banner("Fleet Not Found", f"No fleet found for company: {args.company}")
 
     except KeyboardInterrupt:
-        print("\nOperation cancelled by user")
+        if not args.quiet:
+            print("\nOperation cancelled by user")
+        else:
+            print("\nCancelled")
     except Exception as e:
-        logger.error(f"Unexpected error: {e}")
+        display_error_banner("Unexpected Error", f"An unexpected error occurred: {str(e)}")
+        if args.debug:
+            import traceback
+            print("Debug traceback:")
+            traceback.print_exc()
 
 
 if __name__ == '__main__':
