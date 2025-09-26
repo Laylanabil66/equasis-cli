@@ -1,5 +1,10 @@
 # Equasis CLI Tool
 
+[![Python Version](https://img.shields.io/badge/python-3.7+-blue.svg)](https://www.python.org/downloads/)
+[![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc-sa/4.0/)
+[![GitHub Stars](https://img.shields.io/github/stars/rhinonix/equasis-cli?style=social)](https://github.com/rhinonix/equasis-cli/stargazers)
+[![GitHub Issues](https://img.shields.io/github/issues/rhinonix/equasis-cli)](https://github.com/rhinonix/equasis-cli/issues)
+
 A comprehensive command-line interface for accessing Equasis maritime intelligence. This professional-grade tool provides complete vessel profiles with management details, inspection history, and ownership tracking through a clean, scriptable CLI.
 
 > **Major Update**: Now provides comprehensive vessel intelligence with 50+ data points including management companies, PSC inspections, historical names/flags, and classification details - all collected automatically from multiple Equasis tabs.
@@ -1092,14 +1097,23 @@ Contributions are welcome! Please follow these guidelines:
 
 ## License
 
-This project is licensed under the MIT License. See LICENSE file for details.
+This project is licensed under the [Creative Commons Attribution-NonCommercial-ShareAlike 4.0 International License](https://creativecommons.org/licenses/by-nc-sa/4.0/).
 
-### MIT License Summary
+### License Summary
 
-- Free to use, modify, and distribute
-- No warranty provided
-- Must include original license notice
-- Author not liable for damages
+**You are free to:**
+- **Share**: Copy and redistribute the material in any medium or format
+- **Adapt**: Remix, transform, and build upon the material
+
+**Under the following terms:**
+- **Attribution**: You must give appropriate credit and provide a link to the license
+- **NonCommercial**: You may not use the material for commercial purposes without permission
+- **ShareAlike**: If you remix or build upon the material, you must distribute your contributions under the same license
+- **No Warranty**: The software is provided "as-is" without warranty of any kind
+
+For commercial use inquiries, please contact the author.
+
+See the [LICENSE](LICENSE) file for full legal text.
 
 ---
 
