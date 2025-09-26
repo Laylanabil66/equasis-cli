@@ -1,0 +1,26 @@
+venv/
+.env
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+.pytest_cache/
+
+# Local development files
+local/
+*.egg-info/
+.DS_Store
+debug_vessel_*.html
+
+# Python cache and temporary files
+*.py[cod]
+*$py.class
+dist/
+build/
+
+# Development documentation moved to docs/
+# CLAUDE.md stays local only (not tracked in git)
+CLAUDE.md
+# site/ moved to local/debug/
