@@ -7,12 +7,12 @@
 [![GitHub Stars](https://img.shields.io/github/stars/rhinonix/equasis-cli?style=social)](https://github.com/rhinonix/equasis-cli/stargazers)
 [![GitHub Issues](https://img.shields.io/github/issues/rhinonix/equasis-cli)](https://github.com/rhinonix/equasis-cli/issues)
 
-A comprehensive command-line interface for accessing Equasis maritime intelligence. This professional-grade tool provides complete vessel profiles with management details, inspection history, and ownership tracking through a clean, scriptable CLI.
+A command-line tool for accessing Equasis maritime intelligence. Created to solve a real problem: investigating large numbers of vessels and management companies is cumbersome through the web interface. This tool provides a scriptable way to query vessel data, export in multiple formats, and analyze fleets efficiently.
 
 > **Major Update**: Now provides comprehensive vessel intelligence with 50+ data points including management companies, PSC inspections, historical names/flags, and classification details - all collected automatically from multiple Equasis tabs.
 
-> [!IMPORTANT]  
-> This tool interfaces with Equasis through web scraping. The HTML parsing may need updates if Equasis changes their website structure. Users should monitor for any changes and update the parsing logic accordingly.
+> [!IMPORTANT]
+> The HTML parsing may need updates if Equasis changes their website structure. If you encounter parsing errors or missing data, please [submit an issue](https://github.com/rhinonix/equasis-cli/issues) with details about the error. Developers are welcome to submit pull requests with fixes.
 
 ## Table of Contents
 
