@@ -11,6 +11,9 @@ A comprehensive command-line interface for accessing Equasis maritime intelligen
 
 > **Major Update**: Now provides comprehensive vessel intelligence with 50+ data points including management companies, PSC inspections, historical names/flags, and classification details - all collected automatically from multiple Equasis tabs.
 
+> [!IMPORTANT]  
+> This tool interfaces with Equasis through web scraping. The HTML parsing may need updates if Equasis changes their website structure. Users should monitor for any changes and update the parsing logic accordingly.
+
 ## Table of Contents
 
 - [Overview](#overview)
