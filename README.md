@@ -1,6 +1,6 @@
 # Equasis CLI Tool
 
-![Alt text](https://github.com/user-attachments/assets/3365be6e-5a3a-4f76-97b8-e6dc6934f693 "Screenshot of equasis-cli")
+![Alt text](https://github.com/user-attachments/assets/d8efd954-438b-4e91-b000-8391b2f0321f "Screenshot of equasis-cli")
 
 [![Python Version](https://img.shields.io/badge/python-3.7+-blue.svg)](https://www.python.org/downloads/)
 [![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/License-CC%20BY--NC--SA%204.0-lightgrey.svg)](https://creativecommons.org/licenses/by-nc-sa/4.0/)
