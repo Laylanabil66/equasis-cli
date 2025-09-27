@@ -71,7 +71,7 @@ Equasis CLI Tool is a Python-based command-line application that interfaces with
 - **Environment Variables**: Secure credential management via .env files
 - **Comprehensive Logging**: Debug and monitor operations with detailed logging
 
-### Planned Features
+### [Planned Features](https://github.com/users/rhinonix/projects/1/views/1)
 
 #### Near-Term Enhancements
 

@@ -13,6 +13,8 @@ local/
 *.egg-info/
 .DS_Store
 debug_vessel_*.html
+CLAUDE.md
+.claude/
 
 # Python cache and temporary files
 *.py[cod]
@@ -21,6 +23,4 @@ dist/
 build/
 
 # Development documentation moved to docs/
-# CLAUDE.md stays local only (not tracked in git)
-CLAUDE.md
 # site/ moved to local/debug/
