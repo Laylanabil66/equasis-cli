@@ -384,6 +384,136 @@ class InteractiveShell(cmd.Cmd):
                 print(f"Error: {e}")
             print()
 
+    def do_batch(self, line: str):
+        """
+        Process multiple vessels in batch
+        Usage: batch /imos "IMO1,IMO2,IMO3" [/format table|json|csv] [/output filename]
+               batch /file filename.txt [/format table|json|csv] [/output filename]
+
+        Examples:
+          batch /imos "9074729,8515128,9632179"
+          batch /file fleet_imos.txt /format json /output results.json
+          batch /imos "9074729,8515128" /output batch_results.csv
+        """
+        if not line.strip():
+            self.help_batch()
+            return
+
+        expected_params = {'imos': False, 'file': False, 'format': False, 'output': False}
+        params, _ = self.parse_slash_command(line, expected_params)
+
+        # Check for either /imos or /file parameter
+        if not ('imos' in params or 'file' in params):
+            if Colors.supports_color():
+                print(f"{Colors.DIM_RED}Error: Either /imos or /file parameter is required{Colors.RESET}")
+            else:
+                print("Error: Either /imos or /file parameter is required")
+            self.help_batch()
+            return
+
+        if 'imos' in params and 'file' in params:
+            if Colors.supports_color():
+                print(f"{Colors.DIM_RED}Error: Cannot use both /imos and /file parameters{Colors.RESET}")
+            else:
+                print("Error: Cannot use both /imos and /file parameters")
+            return
+
+        if not self.ensure_authenticated():
+            return
+
+        # Handle output parameters
+        output_format, output_file = self._handle_output_params(params)
+        if output_format is None:
+            return
+
+        # Get IMO list
+        imo_list = []
+        if 'imos' in params:
+            # Parse comma-separated IMOs
+            imo_list = [imo.strip() for imo in params['imos'].split(',')]
+        elif 'file' in params:
+            # Read IMOs from file
+            try:
+                with open(params['file'], 'r') as f:
+                    for line in f:
+                        line = line.strip()
+                        # Skip empty lines and comments
+                        if line and not line.startswith('#'):
+                            imo_list.append(line)
+            except FileNotFoundError:
+                if Colors.supports_color():
+                    print(f"{Colors.DIM_RED}Error: File not found: {params['file']}{Colors.RESET}")
+                else:
+                    print(f"Error: File not found: {params['file']}")
+                return
+            except Exception as e:
+                if Colors.supports_color():
+                    print(f"{Colors.DIM_RED}Error reading file: {e}{Colors.RESET}")
+                else:
+                    print(f"Error reading file: {e}")
+                return
+
+        if not imo_list:
+            if Colors.supports_color():
+                print(f"{Colors.DIM_RED}Error: No IMO numbers to process{Colors.RESET}")
+            else:
+                print("Error: No IMO numbers to process")
+            return
+
+        # Progress callback function
+        def progress_callback(current, total, imo, status):
+            if Colors.supports_color():
+                if status == "processing":
+                    print(f"{Colors.DIM}[{current}/{total}] Processing IMO {imo}...{Colors.RESET}")
+                elif status == "success":
+                    print(f"{Colors.DIM_GREEN}[{current}/{total}] ✓ IMO {imo} retrieved{Colors.RESET}")
+                elif status == "not_found":
+                    print(f"{Colors.DIM_YELLOW}[{current}/{total}] ⚠ IMO {imo} not found{Colors.RESET}")
+                elif status == "error":
+                    print(f"{Colors.DIM_RED}[{current}/{total}] ✗ IMO {imo} error{Colors.RESET}")
+            else:
+                if status == "processing":
+                    print(f"[{current}/{total}] Processing IMO {imo}...")
+                elif status == "success":
+                    print(f"[{current}/{total}] ✓ IMO {imo} retrieved")
+                elif status == "not_found":
+                    print(f"[{current}/{total}] ⚠ IMO {imo} not found")
+                elif status == "error":
+                    print(f"[{current}/{total}] ✗ IMO {imo} error")
+
+        try:
+            if Colors.supports_color():
+                print(f"{Colors.DIM}Starting batch processing of {len(imo_list)} vessels...{Colors.RESET}")
+            else:
+                print(f"Starting batch processing of {len(imo_list)} vessels...")
+            print()
+
+            # Process batch with progress callback
+            results = self.client.search_vessels_by_imo_batch(
+                imo_list,
+                progress_callback=progress_callback,
+                stop_on_error=False
+            )
+
+            print()
+            output = self.formatter.format_batch_vessel_info(results, output_format)
+            self._save_or_print_output(output, output_file, "Batch")
+
+            # Summary
+            successful = sum(1 for r in results if r.success)
+            if Colors.supports_color():
+                print(f"{Colors.DIM_GREEN}✓ Batch processing completed: {successful}/{len(results)} successful{Colors.RESET}")
+            else:
+                print(f"✓ Batch processing completed: {successful}/{len(results)} successful")
+            print()
+
+        except Exception as e:
+            if Colors.supports_color():
+                print(f"{Colors.DIM_RED}Error: {e}{Colors.RESET}")
+            else:
+                print(f"Error: {e}")
+            print()
+
     def do_format(self, line: str):
         """
         Set default output format
@@ -599,6 +729,71 @@ Parameters:
   /format   Output format: table, json, csv (optional)
 """)
 
+    def help_batch(self):
+        """Help for batch command"""
+        if Colors.supports_color():
+            print(f"""
+{Colors.DIM_CYAN}batch{Colors.RESET} - Process multiple vessels in batch
+
+{Colors.DIM}Usage:{Colors.RESET}
+  batch /imos "IMO1,IMO2,IMO3" [/format table|json|csv] [/output filename]
+  batch /file filename.txt [/format table|json|csv] [/output filename]
+
+{Colors.DIM}Examples:{Colors.RESET}
+  batch /imos "9074729,8515128,9632179"
+  batch /file fleet_imos.txt /format json
+  batch /imos "9074729,8515128" /output batch_results.csv
+  batch /file my_vessels.txt /output results.json
+
+{Colors.DIM}Parameters:{Colors.RESET}
+  /imos     Comma-separated IMO numbers (use this OR /file)
+  /file     File containing IMO numbers, one per line (use this OR /imos)
+  /format   Output format: table, json, csv (optional)
+  /output   Save to file (optional)
+
+{Colors.DIM}File Format:{Colors.RESET}
+  Text file with one IMO per line
+  Lines starting with # are treated as comments
+  Empty lines are ignored
+
+{Colors.DIM}Example file content:{Colors.RESET}
+  # Fleet vessels
+  9074729
+  8515128
+  9632179
+""")
+        else:
+            print("""
+batch - Process multiple vessels in batch
+
+Usage:
+  batch /imos "IMO1,IMO2,IMO3" [/format table|json|csv] [/output filename]
+  batch /file filename.txt [/format table|json|csv] [/output filename]
+
+Examples:
+  batch /imos "9074729,8515128,9632179"
+  batch /file fleet_imos.txt /format json
+  batch /imos "9074729,8515128" /output batch_results.csv
+  batch /file my_vessels.txt /output results.json
+
+Parameters:
+  /imos     Comma-separated IMO numbers (use this OR /file)
+  /file     File containing IMO numbers, one per line (use this OR /imos)
+  /format   Output format: table, json, csv (optional)
+  /output   Save to file (optional)
+
+File Format:
+  Text file with one IMO per line
+  Lines starting with # are treated as comments
+  Empty lines are ignored
+
+Example file content:
+  # Fleet vessels
+  9074729
+  8515128
+  9632179
+""")
+
     def default(self, line):
         """Handle unknown commands"""
         if Colors.supports_color():
@@ -608,3 +803,48 @@ Parameters:
             print(f"Unknown command: {line.split()[0]}")
             print("Type 'help' for available commands")
         print()
+
+    def help_help(self):
+        """Override help for help command to include batch"""
+        if Colors.supports_color():
+            print(f"""
+{Colors.DIM_CYAN}Available Commands:{Colors.RESET}
+
+  vessel    Get comprehensive vessel information by IMO
+  search    Search for vessels by name
+  fleet     Get fleet information for a company
+  batch     Process multiple vessels in batch
+  format    Set default output format
+  output    Information about saving output to files
+  status    Show current session status
+  clear     Clear the terminal screen
+  help      Show this help message or help for a specific command
+  exit      Exit the interactive shell
+
+{Colors.DIM}For detailed help on a specific command, type:{Colors.RESET}
+  help <command>
+
+{Colors.DIM}Example:{Colors.RESET}
+  help batch
+""")
+        else:
+            print("""
+Available Commands:
+
+  vessel    Get comprehensive vessel information by IMO
+  search    Search for vessels by name
+  fleet     Get fleet information for a company
+  batch     Process multiple vessels in batch
+  format    Set default output format
+  output    Information about saving output to files
+  status    Show current session status
+  clear     Clear the terminal screen
+  help      Show this help message or help for a specific command
+  exit      Exit the interactive shell
+
+For detailed help on a specific command, type:
+  help <command>
+
+Example:
+  help batch
+""")

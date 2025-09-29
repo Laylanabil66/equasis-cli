@@ -6,9 +6,10 @@ Output Formatter - Handles different output formats for vessel, fleet, and searc
 import json
 from typing import List
 from dataclasses import asdict
+from datetime import datetime
 
 from .parser import EquasisVesselData
-from .client import SimpleVesselInfo, FleetInfo
+from .client import SimpleVesselInfo, FleetInfo, BatchResult, BatchSummary
 
 
 class OutputFormatter:
@@ -146,3 +147,144 @@ Last Update:   {basic.last_update or 'N/A'}
             for vessel in fleet.vessels:
                 output += f"IMO: {vessel.imo} | Name: {vessel.name} | Flag: {vessel.flag} | Type: {vessel.vessel_type}\n"
             return output
+
+    @staticmethod
+    def format_batch_vessel_info(results: List[BatchResult], output_format: str = 'table') -> str:
+        """Format batch vessel processing results"""
+        # Calculate summary statistics
+        total = len(results)
+        successful = sum(1 for r in results if r.success)
+        failed = total - successful
+        total_time = sum(r.processing_time for r in results)
+        failed_imos = [r.imo for r in results if not r.success]
+
+        summary = BatchSummary(
+            total_vessels=total,
+            successful=successful,
+            failed=failed,
+            processing_time=total_time,
+            failed_imos=failed_imos,
+            timestamp=datetime.now().isoformat()
+        )
+
+        if output_format == 'json':
+            return OutputFormatter._format_batch_json(results, summary)
+        elif output_format == 'csv':
+            return OutputFormatter._format_batch_csv(results)
+        else:  # table format
+            return OutputFormatter._format_batch_table(results, summary)
+
+    @staticmethod
+    def _format_batch_json(results: List[BatchResult], summary: BatchSummary) -> str:
+        """Format batch results as JSON"""
+        output_data = {
+            "batch_summary": {
+                "total_vessels": summary.total_vessels,
+                "successful": summary.successful,
+                "failed": summary.failed,
+                "processing_time": round(summary.processing_time, 2),
+                "timestamp": summary.timestamp,
+                "failed_imos": summary.failed_imos
+            },
+            "results": []
+        }
+
+        for result in results:
+            if result.success and result.vessel_data:
+                result_entry = {
+                    "imo": result.imo,
+                    "success": True,
+                    "processing_time": round(result.processing_time, 2),
+                    "vessel_data": {
+                        "basic_info": asdict(result.vessel_data.basic_info),
+                        "overview": result.vessel_data.overview,
+                        "management": [asdict(c) for c in result.vessel_data.management],
+                        "classification": [asdict(c) for c in result.vessel_data.classification],
+                        "geographical": [asdict(g) for g in result.vessel_data.geographical],
+                        "inspections": [asdict(i) for i in result.vessel_data.inspections],
+                        "historical_names": [asdict(h) for h in result.vessel_data.historical_names],
+                        "historical_flags": [asdict(h) for h in result.vessel_data.historical_flags],
+                        "historical_companies": [asdict(h) for h in result.vessel_data.historical_companies]
+                    }
+                }
+            else:
+                result_entry = {
+                    "imo": result.imo,
+                    "success": False,
+                    "processing_time": round(result.processing_time, 2),
+                    "error": result.error_message or "Unknown error"
+                }
+
+            output_data["results"].append(result_entry)
+
+        return json.dumps(output_data, indent=2)
+
+    @staticmethod
+    def _format_batch_csv(results: List[BatchResult]) -> str:
+        """Format batch results as CSV"""
+        lines = ["IMO,Name,Flag,Type,GT,DWT,Year,Status,Error"]
+
+        for result in results:
+            if result.success and result.vessel_data:
+                basic = result.vessel_data.basic_info
+                lines.append(
+                    f"{basic.imo},"
+                    f"{basic.name},"
+                    f"{basic.flag},"
+                    f"{basic.vessel_type or ''},"
+                    f"{basic.gross_tonnage or ''},"
+                    f"{basic.dwt or ''},"
+                    f"{basic.year_built or ''},"
+                    f"{basic.status or ''},"
+                )
+            else:
+                lines.append(f"{result.imo},,,,,,,,\"{result.error_message or 'Unknown error'}\"")
+
+        return '\n'.join(lines)
+
+    @staticmethod
+    def _format_batch_table(results: List[BatchResult], summary: BatchSummary) -> str:
+        """Format batch results as a table"""
+        output = []
+        output.append("\n" + "=" * 70)
+        output.append("BATCH PROCESSING RESULTS")
+        output.append("=" * 70)
+        output.append(f"Total Vessels: {summary.total_vessels}")
+        output.append(f"Successful: {summary.successful}")
+        output.append(f"Failed: {summary.failed}")
+        output.append(f"Processing Time: {summary.processing_time:.1f}s")
+        output.append(f"Timestamp: {summary.timestamp}")
+        output.append("")
+
+        # Successful vessels
+        successful_results = [r for r in results if r.success and r.vessel_data]
+        if successful_results:
+            output.append("Successfully Retrieved:")
+            output.append("-" * 70)
+            output.append(f"{'IMO':<10} | {'Name':<25} | {'Flag':<15} | {'Type':<15}")
+            output.append("-" * 70)
+
+            for result in successful_results:
+                basic = result.vessel_data.basic_info
+                output.append(
+                    f"{basic.imo:<10} | "
+                    f"{basic.name[:25]:<25} | "
+                    f"{(basic.flag or 'N/A')[:15]:<15} | "
+                    f"{(basic.vessel_type or 'N/A')[:15]:<15}"
+                )
+
+        # Failed lookups
+        failed_results = [r for r in results if not r.success]
+        if failed_results:
+            output.append("")
+            output.append("Failed Lookups:")
+            output.append("-" * 70)
+            output.append(f"{'IMO':<10} | {'Error':<58}")
+            output.append("-" * 70)
+
+            for result in failed_results:
+                error_msg = (result.error_message or "Unknown error")[:58]
+                output.append(f"{result.imo:<10} | {error_msg}")
+
+        output.append("=" * 70)
+        return '\n'.join(output)

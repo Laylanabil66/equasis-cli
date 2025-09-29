@@ -58,12 +58,18 @@ def traditional_main():
     parser.add_argument('--no-banner', action='store_true', help='Skip startup banner display')
     parser.add_argument('--quiet', action='store_true', help='Minimal output mode')
     parser.add_argument('--interactive', action='store_true', help='Start interactive mode')
+    parser.add_argument('--batch', action='store_true', help='Enable batch processing mode')
 
     subparsers = parser.add_subparsers(dest='command', help='Available commands')
 
     # Vessel command
     vessel_parser = subparsers.add_parser('vessel', help='Get vessel information')
-    vessel_parser.add_argument('--imo', required=True, help='IMO number')
+    vessel_parser.add_argument('--imo', nargs='+', help='IMO number(s) - can specify multiple')
+    vessel_parser.add_argument('--imo-file', help='File containing IMO numbers (one per line)')
+    vessel_parser.add_argument('--continue-on-error', action='store_true',
+                              help='Continue processing on errors (batch mode)')
+    vessel_parser.add_argument('--progress', action='store_true',
+                              help='Show progress indicators (batch mode)')
 
     # Search command
     search_parser = subparsers.add_parser('search', help='Search vessels by name')
@@ -125,20 +131,87 @@ def traditional_main():
 
     try:
         if args.command == 'vessel':
-            vessel = client.search_vessel_by_imo(args.imo)
-            if vessel:
-                output = formatter.format_vessel_info(vessel, args.output)
+            # Check if batch mode (multiple IMOs or file input)
+            imo_list = []
+
+            # Handle IMO file input
+            if hasattr(args, 'imo_file') and args.imo_file:
+                try:
+                    with open(args.imo_file, 'r') as f:
+                        for line in f:
+                            line = line.strip()
+                            # Skip empty lines and comments
+                            if line and not line.startswith('#'):
+                                imo_list.append(line)
+                except FileNotFoundError:
+                    display_error_banner("File Error", f"File not found: {args.imo_file}")
+                    return
+                except Exception as e:
+                    display_error_banner("File Error", f"Error reading file: {e}")
+                    return
+            # Handle direct IMO input
+            elif hasattr(args, 'imo') and args.imo:
+                imo_list = args.imo if isinstance(args.imo, list) else [args.imo]
+            else:
+                display_error_banner("Input Error", "Either --imo or --imo-file is required")
+                return
+
+            # Check if batch mode (multiple IMOs)
+            if len(imo_list) > 1:
+                # Batch processing
+                if not args.quiet:
+                    print(f"Processing {len(imo_list)} vessels...\n")
+
+                # Progress callback for batch mode
+                def progress_callback(current, total, imo, status):
+                    if args.progress and not args.quiet:
+                        if status == "processing":
+                            print(f"[{current}/{total}] Processing IMO {imo}...")
+                        elif status == "success":
+                            print(f"[{current}/{total}] ✓ IMO {imo} retrieved")
+                        elif status == "not_found":
+                            print(f"[{current}/{total}] ⚠ IMO {imo} not found")
+                        elif status == "error":
+                            print(f"[{current}/{total}] ✗ IMO {imo} error")
+
+                # Process batch
+                results = client.search_vessels_by_imo_batch(
+                    imo_list,
+                    progress_callback=progress_callback if args.progress else None,
+                    stop_on_error=not getattr(args, 'continue_on_error', True)
+                )
+
+                # Format and output results
+                output = formatter.format_batch_vessel_info(results, args.output)
                 if args.output_file:
                     with open(args.output_file, 'w') as f:
                         f.write(output)
                     if not args.quiet:
-                        display_success_summary("Vessel Lookup", f"Data saved to {args.output_file}")
+                        successful = sum(1 for r in results if r.success)
+                        display_success_summary("Batch Processing",
+                            f"Processed {len(results)} vessels ({successful} successful), saved to {args.output_file}")
                 else:
                     print(output)
                     if not args.quiet:
-                        display_success_summary("Vessel Lookup", f"Comprehensive data retrieved for IMO {args.imo}")
+                        successful = sum(1 for r in results if r.success)
+                        display_success_summary("Batch Processing",
+                            f"Processed {len(results)} vessels ({successful} successful)")
             else:
-                display_error_banner("Vessel Not Found", f"No vessel found with IMO: {args.imo}")
+                # Single vessel processing (existing logic)
+                vessel = client.search_vessel_by_imo(imo_list[0])
+                if vessel:
+                    output = formatter.format_vessel_info(vessel, args.output)
+                    if args.output_file:
+                        with open(args.output_file, 'w') as f:
+                            f.write(output)
+                        if not args.quiet:
+                            display_success_summary("Vessel Lookup", f"Data saved to {args.output_file}")
+                    else:
+                        print(output)
+                        if not args.quiet:
+                            display_success_summary("Vessel Lookup", f"Comprehensive data retrieved for IMO {imo_list[0]}")
+                else:
+                    display_error_banner("Vessel Not Found", f"No vessel found with IMO: {imo_list[0]}")
 
         elif args.command == 'search':
             vessels = client.search_vessel_by_name(args.name)

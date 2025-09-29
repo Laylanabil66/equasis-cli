@@ -60,6 +60,7 @@ Equasis CLI Tool is a Python-based command-line application that interfaces with
 - **Vessel Search by IMO**: Look up comprehensive vessel information using IMO numbers
 - **Vessel Search by Name**: Search for vessels using partial or complete names
 - **Fleet Information**: Retrieve fleet data for shipping companies
+- **Batch Processing**: Process multiple vessels in a single operation with progress tracking
 
 #### Technical Features
 
@@ -75,7 +76,6 @@ Equasis CLI Tool is a Python-based command-line application that interfaces with
 
 #### Near-Term Enhancements
 
-- **Batch Processing**: Process multiple IMO numbers efficiently
 - **Data Caching**: Reduce redundant API calls with intelligent caching
 - **Enhanced Search/Fleet Parsing**: Apply comprehensive parsing to search results
 - **Progress Indicators**: Visual feedback for long operations
@@ -245,6 +245,7 @@ This launches a modern REPL-style interface where you can run multiple commands 
 - **Built-in Help**: Type `help` to see all commands
 - **Format Control**: Set default output format or override per-command
 - **File Output**: Save results with `/output filename.ext`
+- **Batch Processing**: Process multiple vessels with `batch` command
 
 ### Traditional CLI Mode
 
@@ -596,6 +597,33 @@ Get complete vessel intelligence with management, inspections, and history:
 
 **What you get**: Complete vessel profile including management companies, PSC inspection history, historical names/flags, classification details, and geographical tracking - all from a single command!
 
+#### Batch Processing Multiple Vessels
+
+Process multiple vessels at once:
+
+```bash
+# Process multiple IMO numbers directly
+> batch /imos "9074729,9632179,9839333"
+
+# Process IMOs from a file
+> batch /file fleet_imos.txt
+
+# Save batch results to JSON
+> batch /imos "9074729,9632179" /format json /output batch_results.json
+
+# Process with CSV output
+> batch /file my_vessels.txt /format csv /output fleet_analysis.csv
+```
+
+**File Format for Batch Processing:**
+```text
+# fleet_imos.txt - comments are supported
+9074729   # EMMA MAERSK
+9632179   # MSC OSCAR
+9839333   # EVER GIVEN
+# Empty lines are ignored
+```
+
 #### Multiple Queries in One Session
 
 ```bash
@@ -627,6 +655,15 @@ equasis --output json vessel --imo 8515128
 
 # Save comprehensive report to file
 equasis --output json --output-file vessel_intelligence.json vessel --imo 8515128
+
+# BATCH PROCESSING: Multiple vessels at once
+equasis vessel --imo 9074729 9632179 9839333 --progress
+
+# Process IMOs from a file
+equasis vessel --imo-file fleet_imos.txt --output csv --output-file results.csv
+
+# Continue on errors with progress display
+equasis vessel --imo-file large_fleet.txt --continue-on-error --progress
 ```
 
 #### Search by Name

@@ -15,6 +15,25 @@ from .parser import EquasisParser, EquasisVesselData
 logger = logging.getLogger(__name__)
 
 @dataclass
+class BatchResult:
+    """Result from batch vessel processing"""
+    imo: str
+    success: bool
+    vessel_data: Optional[EquasisVesselData] = None
+    error_message: Optional[str] = None
+    processing_time: float = 0.0
+
+@dataclass
+class BatchSummary:
+    """Summary of batch processing operation"""
+    total_vessels: int
+    successful: int
+    failed: int
+    processing_time: float
+    failed_imos: List[str]
+    timestamp: str = ""
+
+@dataclass
 class SimpleVesselInfo:
     """Simple vessel info for fleet/search operations"""
     imo: str
@@ -218,3 +237,75 @@ class EquasisClient:
         """Parse fleet information from HTML"""
         # Implementation depends on HTML structure
         return None
+
+    def search_vessels_by_imo_batch(self, imos: List[str],
+                                   progress_callback=None,
+                                   stop_on_error: bool = False) -> List[BatchResult]:
+        """
+        Process multiple IMO numbers with progress tracking
+
+        Args:
+            imos: List of IMO numbers to process
+            progress_callback: Optional callback for progress updates (current, total, imo, status)
+            stop_on_error: Whether to stop processing on first error
+
+        Returns:
+            List of BatchResult objects
+        """
+        import time
+        from datetime import datetime
+
+        results = []
+        start_time = time.time()
+
+        for idx, imo in enumerate(imos, 1):
+            vessel_start = time.time()
+
+            # Call progress callback if provided
+            if progress_callback:
+                progress_callback(idx, len(imos), imo, "processing")
+
+            try:
+                # Use existing method to get vessel data
+                vessel_data = self.search_vessel_by_imo(imo)
+
+                if vessel_data:
+                    result = BatchResult(
+                        imo=imo,
+                        success=True,
+                        vessel_data=vessel_data,
+                        processing_time=time.time() - vessel_start
+                    )
+                    if progress_callback:
+                        progress_callback(idx, len(imos), imo, "success")
+                else:
+                    result = BatchResult(
+                        imo=imo,
+                        success=False,
+                        error_message="Vessel not found",
+                        processing_time=time.time() - vessel_start
+                    )
+                    if progress_callback:
+                        progress_callback(idx, len(imos), imo, "not_found")
+
+            except Exception as e:
+                result = BatchResult(
+                    imo=imo,
+                    success=False,
+                    error_message=str(e),
+                    processing_time=time.time() - vessel_start
+                )
+                if progress_callback:
+                    progress_callback(idx, len(imos), imo, "error")
+
+                if stop_on_error:
+                    logger.error(f"Stopping batch processing due to error: {e}")
+                    break
+
+            results.append(result)
+
+            # Rate limiting - already handled in search_vessel_by_imo, but add extra safety
+            if idx < len(imos):  # Don't delay after last vessel
+                time.sleep(0.1)  # Small additional delay between vessels
+
+        return results
