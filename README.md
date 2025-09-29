@@ -179,41 +179,52 @@ pip install -e .
 
 ## Configuration
 
-### Environment Variables (Recommended)
+### Recommended: Secure Credential Storage
 
-Create a `.env` file in your project directory (if installed from source):
+Set up your Equasis credentials using the built-in credential manager:
 
 ```bash
-# Navigate to project directory (only needed for source installation)
-cd ~/Projects/equasis-cli
-
-# Create .env file from template
-cp .env.example .env
-
-# Edit with your credentials
-nano .env  # or code .env, vim .env, etc.
+# Interactive credential setup (recommended)
+equasis configure --setup
 ```
 
-Add your Equasis credentials:
+This securely stores your credentials in `~/.config/equasis-cli/credentials.json` with proper file permissions (owner-only access). Works from any directory and follows industry standards.
 
+### Alternative Methods
+
+**Environment Variables:**
 ```bash
-EQUASIS_USERNAME=your_username_here
-EQUASIS_PASSWORD=your_password_here
+# Set environment variables (works globally)
+export EQUASIS_USERNAME=your_username_here
+export EQUASIS_PASSWORD=your_password_here
 ```
 
-### Alternative: Command Line Arguments
-
-You can also pass credentials directly:
-
+**Command Line Arguments:**
 ```bash
+# Pass credentials directly (least secure, not recommended)
 equasis --username your_user --password your_pass vessel --imo 9074729
 ```
 
-### Security Best Practices
+### Credential Management Commands
 
-1. **Never commit credentials**: Ensure `.env` is in your `.gitignore`
-2. **Use environment variables**: Avoid passing credentials on command line in shared environments
-3. **Limit file permissions**: `chmod 600 .env` (read/write for owner only)
+```bash
+# Set up credentials interactively
+equasis configure --setup
+
+# Check credential status (helpful for debugging)
+equasis configure --show
+
+# Remove stored credentials
+equasis configure --clear
+```
+
+### Security Features
+
+- **XDG-compliant storage**: Follows industry standards (`~/.config/equasis-cli/`)
+- **Secure file permissions**: Config file readable only by owner (600 permissions)
+- **Credential hierarchy**: Command-line args override environment vars override config file
+- **Cross-platform**: Works on macOS, Linux, Windows with appropriate config directories
+- **Global operation**: No dependency on project directories or local files
 
 ## Usage
 
