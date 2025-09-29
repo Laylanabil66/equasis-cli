@@ -71,6 +71,7 @@ Equasis CLI Tool is a Python-based command-line application that interfaces with
 - **Rate Limiting**: Built-in delays to respect server resources (1-second intervals)
 - **Environment Variables**: Secure credential management via .env files
 - **Comprehensive Logging**: Debug and monitor operations with detailed logging
+- **Enterprise-Grade Retry Logic**: Exponential backoff with jitter for network resilience
 
 ### [Planned Features](https://github.com/users/rhinonix/projects/1/views/1)
 
@@ -980,6 +981,61 @@ The modular design makes it easy to add features:
 2. **Create new formatters**: Add methods to `OutputFormatter` class
 3. **Add data validation**: Create validation functions for input data
 4. **Implement caching**: Add caching layer to reduce redundant requests
+
+## Network Resilience & Retry Logic
+
+equasis-cli includes enterprise-grade retry functionality to handle network issues and server-side problems gracefully.
+
+### Automatic Retry Features
+
+- **Exponential Backoff**: Delays increase exponentially between retry attempts (1s, 2s, 4s, etc.)
+- **Jitter**: Random variance added to prevent "thundering herd" problems
+- **Smart Error Classification**: Distinguishes between retryable and non-retryable errors
+- **Configurable Parameters**: Customizable retry limits and timing
+
+### Retried Error Types
+
+**Network Errors (Always Retried):**
+- Connection timeouts and failures
+- DNS resolution failures
+- Network interruptions
+- Remote connection drops
+
+**HTTP Errors (Conditionally Retried):**
+- `429` Too Many Requests
+- `500` Internal Server Error
+- `502` Bad Gateway
+- `503` Service Unavailable
+- `504` Gateway Timeout
+- CloudFlare error codes (520-524)
+
+**Non-Retried Errors:**
+- `401` Unauthorized (credential issues)
+- `404` Not Found (vessel doesn't exist)
+- `400` Bad Request (malformed request)
+
+### Default Retry Configuration
+
+- **Maximum Retries**: 3 attempts per request
+- **Base Delay**: 1 second
+- **Maximum Delay**: 60 seconds
+- **Backoff Multiplier**: 2.0 (exponential)
+- **Jitter**: ±25% randomization
+
+Example retry sequence for a connection error:
+```
+Attempt 1: Immediate
+Attempt 2: ~1s delay
+Attempt 3: ~2s delay
+Attempt 4: ~4s delay
+```
+
+### Viewing Retry Activity
+
+Enable debug logging to see retry attempts:
+```bash
+equasis --debug vessel --imo 9074729
+```
 
 ## Troubleshooting
 

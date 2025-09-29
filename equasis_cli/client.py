@@ -6,13 +6,119 @@ Equasis Client - Handles authentication and web scraping of Equasis website
 import requests
 import time
 import logging
-from typing import Optional, List
+import random
+from typing import Optional, List, Callable
 from bs4 import BeautifulSoup
 from dataclasses import dataclass
+from requests.exceptions import (
+    ConnectionError, Timeout, HTTPError, RequestException,
+    ChunkedEncodingError, ContentDecodingError
+)
 
 from .parser import EquasisParser, EquasisVesselData
 
 logger = logging.getLogger(__name__)
+
+@dataclass
+class RetryConfig:
+    """Configuration for retry behavior following industry best practices"""
+    max_retries: int = 3
+    base_delay: float = 1.0  # Base delay in seconds
+    max_delay: float = 60.0  # Maximum delay in seconds
+    exponential_base: float = 2.0  # Exponential backoff multiplier
+    jitter: bool = True  # Add randomness to prevent thundering herd
+
+    def __post_init__(self):
+        """Initialize mutable defaults after object creation"""
+        if not hasattr(self, '_retryable_exceptions'):
+            self._retryable_exceptions = (
+                ConnectionError,
+                Timeout,
+                ChunkedEncodingError,
+                ContentDecodingError,
+                HTTPError,  # Will check status code separately
+            )
+        if not hasattr(self, '_retryable_status_codes'):
+            self._retryable_status_codes = {
+                429,  # Too Many Requests
+                500,  # Internal Server Error
+                502,  # Bad Gateway
+                503,  # Service Unavailable
+                504,  # Gateway Timeout
+                520,  # CloudFlare: Unknown Error
+                521,  # CloudFlare: Web Server Is Down
+                522,  # CloudFlare: Connection Timed Out
+                523,  # CloudFlare: Origin Is Unreachable
+                524,  # CloudFlare: A Timeout Occurred
+            }
+
+    @property
+    def retryable_exceptions(self):
+        return self._retryable_exceptions
+
+    @property
+    def retryable_status_codes(self):
+        return self._retryable_status_codes
+
+def with_retry(retry_config: RetryConfig = None):
+    """
+    Decorator that implements exponential backoff with jitter for network operations
+
+    Based on AWS best practices:
+    https://docs.aws.amazon.com/general/latest/gr/api-retries.html
+    """
+    if retry_config is None:
+        retry_config = RetryConfig()
+
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            last_exception = None
+
+            for attempt in range(retry_config.max_retries + 1):
+                try:
+                    result = func(*args, **kwargs)
+
+                    # Check for HTTP errors that should be retried
+                    if hasattr(result, 'status_code') and result.status_code in retry_config.retryable_status_codes:
+                        raise HTTPError(f"HTTP {result.status_code}", response=result)
+
+                    # Success - reset any session issues and return
+                    if attempt > 0:
+                        logger.info(f"Operation succeeded on attempt {attempt + 1}")
+                    return result
+
+                except retry_config.retryable_exceptions as e:
+                    last_exception = e
+
+                    if attempt == retry_config.max_retries:
+                        logger.error(f"Operation failed after {retry_config.max_retries + 1} attempts: {e}")
+                        break
+
+                    # Calculate delay with exponential backoff and jitter
+                    delay = min(
+                        retry_config.base_delay * (retry_config.exponential_base ** attempt),
+                        retry_config.max_delay
+                    )
+
+                    if retry_config.jitter:
+                        # Add jitter: delay ± 25%
+                        jitter_range = delay * 0.25
+                        delay = delay + random.uniform(-jitter_range, jitter_range)
+                        delay = max(0.1, delay)  # Ensure minimum delay
+
+                    logger.warning(f"Attempt {attempt + 1} failed ({e}), retrying in {delay:.1f}s...")
+                    time.sleep(delay)
+
+                except Exception as e:
+                    # Non-retryable exception
+                    logger.error(f"Non-retryable error: {e}")
+                    raise
+
+            # All retries exhausted
+            raise last_exception
+
+        return wrapper
+    return decorator
 
 @dataclass
 class BatchResult:
@@ -56,13 +162,17 @@ class FleetInfo:
 class EquasisClient:
     """Client for interacting with Equasis API"""
 
-    def __init__(self, username: str, password: str):
+    def __init__(self, username: str, password: str, retry_config: RetryConfig = None):
         self.username = username
         self.password = password
         self.session = requests.Session()
         self.base_url = "https://www.equasis.org"
         self.logged_in = False
         self.comprehensive_parser = EquasisParser()
+        self.retry_config = retry_config or RetryConfig()
+
+        # Configure session timeouts (industry standard)
+        self.session.timeout = (10, 30)  # (connect_timeout, read_timeout)
 
         # Set headers to mimic a real browser
         self.session.headers.update({
@@ -73,16 +183,28 @@ class EquasisClient:
             'Connection': 'keep-alive',
         })
 
+    @with_retry()
+    def _safe_get(self, url: str, **kwargs):
+        """HTTP GET with retry logic"""
+        logger.debug(f"GET request to: {url}")
+        response = self.session.get(url, timeout=self.session.timeout, **kwargs)
+        response.raise_for_status()
+        return response
+
+    @with_retry()
+    def _safe_post(self, url: str, **kwargs):
+        """HTTP POST with retry logic"""
+        logger.debug(f"POST request to: {url}")
+        response = self.session.post(url, timeout=self.session.timeout, **kwargs)
+        response.raise_for_status()
+        return response
+
     def login(self) -> bool:
         """Login to Equasis"""
         try:
             # Get login page first
             login_url = f"{self.base_url}/EquasisWeb/authen/HomePage?fs=HomePage"
-            response = self.session.get(login_url)
-
-            if response.status_code != 200:
-                logger.error(f"Failed to access login page: {response.status_code}")
-                return False
+            response = self._safe_get(login_url)
 
             # Parse login form to get any hidden fields
             soup = BeautifulSoup(response.text, 'html.parser')
@@ -95,7 +217,7 @@ class EquasisClient:
             }
 
             # Submit login
-            response = self.session.post(login_url, data=login_data)
+            response = self._safe_post(login_url, data=login_data)
 
             # Check if login was successful (you may need to adjust this check)
             if "restricted" in response.url or "Welcome" in response.text:
@@ -128,10 +250,10 @@ class EquasisClient:
             # Fetch each tab
             for tab_name, url in tab_urls.items():
                 logger.info(f"Fetching {tab_name} tab for IMO {imo}")
-                response = self.session.get(url)
-                time.sleep(1)  # Rate limiting
 
-                if response.status_code == 200:
+                try:
+                    response = self._safe_get(url)
+                    time.sleep(1)  # Rate limiting
                     # Parse this tab's content
                     tab_data = self.comprehensive_parser.parse_html(response.text, tab_name)
 
@@ -144,8 +266,10 @@ class EquasisClient:
                             self._merge_vessel_data(vessel_data, tab_data, tab_name)
                     else:
                         logger.warning(f"Failed to parse {tab_name} tab")
-                else:
-                    logger.error(f"Failed to fetch {tab_name} tab: HTTP {response.status_code}")
+
+                except Exception as e:
+                    logger.error(f"Failed to fetch {tab_name} tab for IMO {imo}: {e}")
+                    # Continue with other tabs even if one fails
 
             return vessel_data
 
@@ -188,14 +312,9 @@ class EquasisClient:
                 'submit': 'Search'
             }
 
-            response = self.session.post(search_url, data=search_data)
+            response = self._safe_post(search_url, data=search_data)
             time.sleep(1)
-
-            if response.status_code == 200:
-                return self._parse_vessel_list(response.text)
-            else:
-                logger.error(f"Search failed with status code: {response.status_code}")
-                return []
+            return self._parse_vessel_list(response.text)
 
         except Exception as e:
             logger.error(f"Error searching vessel by name {name}: {e}")
@@ -214,14 +333,9 @@ class EquasisClient:
                 'submit': 'Search'
             }
 
-            response = self.session.post(company_url, data=company_data)
+            response = self._safe_post(company_url, data=company_data)
             time.sleep(1)
-
-            if response.status_code == 200:
-                return self._parse_fleet_info(response.text, company_identifier)
-            else:
-                logger.error(f"Company search failed with status code: {response.status_code}")
-                return None
+            return self._parse_fleet_info(response.text, company_identifier)
 
         except Exception as e:
             logger.error(f"Error getting fleet info for {company_identifier}: {e}")
