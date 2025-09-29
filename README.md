@@ -60,7 +60,7 @@ Equasis CLI Tool is a Python-based command-line application that interfaces with
 - **Vessel Search by IMO**: Look up comprehensive vessel information using IMO numbers
 - **Vessel Search by Name**: Search for vessels using partial or complete names
 - **Fleet Information**: Retrieve fleet data for shipping companies
-- **Batch Processing**: Process multiple vessels in a single operation with progress tracking
+- **Batch Processing**: Process multiple vessels or companies in a single operation with progress tracking
 
 #### Technical Features
 
@@ -246,7 +246,7 @@ This launches a modern REPL-style interface where you can run multiple commands 
 - **Built-in Help**: Type `help` to see all commands
 - **Format Control**: Set default output format or override per-command
 - **File Output**: Save results with `/output filename.ext`
-- **Batch Processing**: Process multiple vessels with `batch` command
+- **Batch Processing**: Process multiple vessels or companies with `batch` command
 
 ### Traditional CLI Mode
 
@@ -598,7 +598,7 @@ Get complete vessel intelligence with management, inspections, and history:
 
 **What you get**: Complete vessel profile including management companies, PSC inspection history, historical names/flags, classification details, and geographical tracking - all from a single command!
 
-#### Batch Processing Multiple Vessels
+#### Batch Processing Multiple Vessels and Companies
 
 Process multiple vessels at once:
 
@@ -616,13 +616,35 @@ Process multiple vessels at once:
 > batch /file my_vessels.txt /format csv /output fleet_analysis.csv
 ```
 
+Process multiple companies for fleet analysis:
+
+```bash
+# Process multiple companies directly
+> batch /companies "MSC,MAERSK,COSCO"
+
+# Process companies from a file
+> batch /company-file shipping_companies.txt
+
+# Save company batch results to JSON
+> batch /companies "MSC,EVERGREEN" /format json /output fleet_comparison.json
+
+# Process with progress indicators
+> batch /companies "MSC,MAERSK,COSCO,EVERGREEN" /format csv /output major_fleets.csv
+```
+
 **File Format for Batch Processing:**
 ```text
-# fleet_imos.txt - comments are supported
+# fleet_imos.txt - IMO numbers with comments
 9074729   # EMMA MAERSK
 9632179   # MSC OSCAR
 9839333   # EVER GIVEN
 # Empty lines are ignored
+
+# shipping_companies.txt - Company names with comments
+MSC                    # Mediterranean Shipping Company
+MAERSK                # A.P. Moller-Maersk
+COSCO SHIPPING        # China COSCO Shipping
+# Comments and empty lines are supported
 ```
 
 #### Multiple Queries in One Session
@@ -752,8 +774,36 @@ equasis --output json --output-file vessel_data.json vessel --imo 9074729
 
 ### Batch Processing
 
+#### Built-in Batch Processing (Recommended)
+
+**Vessel Batch Processing:**
 ```bash
-# Process multiple IMO numbers from a file
+# Process multiple IMO numbers directly
+equasis vessel --imo 9074729 9632179 9839333 --output json
+
+# Process from file with progress indicators
+equasis vessel --imo-file fleet_imos.txt --progress --output csv --output-file batch_results.csv
+
+# Continue on errors instead of stopping
+equasis vessel --imo-file fleet_imos.txt --continue-on-error --progress
+```
+
+**Company Fleet Batch Processing:**
+```bash
+# Process multiple companies directly
+equasis fleet --company "MSC" "MAERSK" "COSCO" --output json
+
+# Process from file with progress indicators
+equasis fleet --company-file shipping_companies.txt --progress --output csv --output-file fleet_analysis.csv
+
+# Continue on errors instead of stopping
+equasis fleet --company-file shipping_companies.txt --continue-on-error --progress
+```
+
+#### Manual Batch Processing (Legacy)
+
+```bash
+# Process multiple IMO numbers from a file (manual approach)
 while read imo; do
     echo "Processing IMO: $imo"
     equasis vessel --imo "$imo" --output csv >> vessels.csv

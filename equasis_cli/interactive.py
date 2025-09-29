@@ -10,14 +10,10 @@ import os
 import sys
 import logging
 from typing import Dict, Optional, Tuple, Any
-from dotenv import load_dotenv
-
 from .client import EquasisClient
 from .formatter import OutputFormatter
 from .banner import display_banner, display_credentials_note, check_credentials, Colors
-
-# Load environment variables
-load_dotenv()
+from .credentials import get_credential_manager
 
 logger = logging.getLogger(__name__)
 
@@ -103,9 +99,9 @@ class InteractiveShell(cmd.Cmd):
     def ensure_authenticated(self) -> bool:
         """Ensure client is authenticated, prompt for credentials if needed"""
         if not self.client:
-            # Check for credentials
-            username = os.getenv('EQUASIS_USERNAME')
-            password = os.getenv('EQUASIS_PASSWORD')
+            # Check for credentials using new credential manager
+            credential_manager = get_credential_manager()
+            username, password = credential_manager.get_credentials()
 
             if not username or not password:
                 print()
@@ -397,36 +393,60 @@ class InteractiveShell(cmd.Cmd):
 
     def do_batch(self, line: str):
         """
-        Process multiple vessels in batch
+        Process multiple vessels or companies in batch
         Usage: batch /imos "IMO1,IMO2,IMO3" [/format table|json|csv] [/output filename]
                batch /file filename.txt [/format table|json|csv] [/output filename]
+               batch /companies "Company1,Company2,Company3" [/format table|json|csv] [/output filename]
+               batch /company-file companies.txt [/format table|json|csv] [/output filename]
 
         Examples:
           batch /imos "9074729,8515128,9632179"
           batch /file fleet_imos.txt /format json /output results.json
-          batch /imos "9074729,8515128" /output batch_results.csv
+          batch /companies "MSC,MAERSK LINE,COSCO"
+          batch /company-file major_carriers.txt /format csv /output fleet_analysis.csv
         """
         if not line.strip():
             self.help_batch()
             return
 
-        expected_params = {'imos': False, 'file': False, 'format': False, 'output': False}
+        expected_params = {'imos': False, 'file': False, 'companies': False, 'company-file': False, 'format': False, 'output': False}
         params, _ = self.parse_slash_command(line, expected_params)
 
-        # Check for either /imos or /file parameter
-        if not ('imos' in params or 'file' in params):
+        # Check for valid parameter combinations
+        vessel_params = ['imos', 'file']
+        company_params = ['companies', 'company-file']
+
+        vessel_provided = any(param in params for param in vessel_params)
+        company_provided = any(param in params for param in company_params)
+
+        if not vessel_provided and not company_provided:
             if Colors.supports_color():
-                print(f"{Colors.DIM_RED}Error: Either /imos or /file parameter is required{Colors.RESET}")
+                print(f"{Colors.DIM_RED}Error: Either vessel parameters (/imos, /file) or company parameters (/companies, /company-file) are required{Colors.RESET}")
             else:
-                print("Error: Either /imos or /file parameter is required")
+                print("Error: Either vessel parameters (/imos, /file) or company parameters (/companies, /company-file) are required")
             self.help_batch()
             return
 
-        if 'imos' in params and 'file' in params:
+        if vessel_provided and company_provided:
+            if Colors.supports_color():
+                print(f"{Colors.DIM_RED}Error: Cannot mix vessel and company parameters{Colors.RESET}")
+            else:
+                print("Error: Cannot mix vessel and company parameters")
+            return
+
+        # Check for conflicting parameters within each type
+        if sum(1 for param in vessel_params if param in params) > 1:
             if Colors.supports_color():
                 print(f"{Colors.DIM_RED}Error: Cannot use both /imos and /file parameters{Colors.RESET}")
             else:
                 print("Error: Cannot use both /imos and /file parameters")
+            return
+
+        if sum(1 for param in company_params if param in params) > 1:
+            if Colors.supports_color():
+                print(f"{Colors.DIM_RED}Error: Cannot use both /companies and /company-file parameters{Colors.RESET}")
+            else:
+                print("Error: Cannot use both /companies and /company-file parameters")
             return
 
         if not self.ensure_authenticated():
@@ -437,41 +457,76 @@ class InteractiveShell(cmd.Cmd):
         if output_format is None:
             return
 
-        # Get IMO list
-        imo_list = []
-        if 'imos' in params:
-            # Parse comma-separated IMOs
-            imo_list = [imo.strip() for imo in params['imos'].split(',')]
-        elif 'file' in params:
-            # Read IMOs from file
-            try:
-                with open(params['file'], 'r') as f:
-                    for line in f:
-                        line = line.strip()
-                        # Skip empty lines and comments
-                        if line and not line.startswith('#'):
-                            imo_list.append(line)
-            except FileNotFoundError:
+        # Determine processing type and get data list
+        if vessel_provided:
+            # Process vessels
+            imo_list = []
+            if 'imos' in params:
+                # Parse comma-separated IMOs
+                imo_list = [imo.strip() for imo in params['imos'].split(',')]
+            elif 'file' in params:
+                # Read IMOs from file
+                imo_list = self._read_list_from_file(params['file'], "IMO numbers")
+                if imo_list is None:  # Error occurred
+                    return
+
+            if not imo_list:
                 if Colors.supports_color():
-                    print(f"{Colors.DIM_RED}Error: File not found: {params['file']}{Colors.RESET}")
+                    print(f"{Colors.DIM_RED}Error: No IMO numbers to process{Colors.RESET}")
                 else:
-                    print(f"Error: File not found: {params['file']}")
-                return
-            except Exception as e:
-                if Colors.supports_color():
-                    print(f"{Colors.DIM_RED}Error reading file: {e}{Colors.RESET}")
-                else:
-                    print(f"Error reading file: {e}")
+                    print("Error: No IMO numbers to process")
                 return
 
-        if not imo_list:
+            self._process_vessel_batch(imo_list, output_format, output_file)
+
+        elif company_provided:
+            # Process companies
+            company_list = []
+            if 'companies' in params:
+                # Parse comma-separated companies
+                company_list = [company.strip() for company in params['companies'].split(',')]
+            elif 'company-file' in params:
+                # Read companies from file
+                company_list = self._read_list_from_file(params['company-file'], "company names")
+                if company_list is None:  # Error occurred
+                    return
+
+            if not company_list:
+                if Colors.supports_color():
+                    print(f"{Colors.DIM_RED}Error: No company names to process{Colors.RESET}")
+                else:
+                    print("Error: No company names to process")
+                return
+
+            self._process_company_batch(company_list, output_format, output_file)
+
+    def _read_list_from_file(self, filename: str, data_type: str):
+        """Read a list of items from file, return None on error"""
+        try:
+            item_list = []
+            with open(filename, 'r') as f:
+                for line in f:
+                    line = line.strip()
+                    # Skip empty lines and comments
+                    if line and not line.startswith('#'):
+                        item_list.append(line)
+            return item_list
+        except FileNotFoundError:
             if Colors.supports_color():
-                print(f"{Colors.DIM_RED}Error: No IMO numbers to process{Colors.RESET}")
+                print(f"{Colors.DIM_RED}Error: File not found: {filename}{Colors.RESET}")
             else:
-                print("Error: No IMO numbers to process")
-            return
+                print(f"Error: File not found: {filename}")
+            return None
+        except Exception as e:
+            if Colors.supports_color():
+                print(f"{Colors.DIM_RED}Error reading file: {e}{Colors.RESET}")
+            else:
+                print(f"Error reading file: {e}")
+            return None
 
-        # Progress callback function
+    def _process_vessel_batch(self, imo_list, output_format, output_file):
+        """Process batch of vessel IMO numbers"""
+        # Progress callback function for vessels
         def progress_callback(current, total, imo, status):
             if Colors.supports_color():
                 if status == "processing":
@@ -508,14 +563,71 @@ class InteractiveShell(cmd.Cmd):
 
             print()
             output = self.formatter.format_batch_vessel_info(results, output_format)
-            self._save_or_print_output(output, output_file, "Batch")
+            self._save_or_print_output(output, output_file, "Vessel Batch")
 
             # Summary
             successful = sum(1 for r in results if r.success)
             if Colors.supports_color():
-                print(f"{Colors.DIM_GREEN}✓ Batch processing completed: {successful}/{len(results)} successful{Colors.RESET}")
+                print(f"{Colors.DIM_GREEN}✓ Vessel batch processing completed: {successful}/{len(results)} successful{Colors.RESET}")
             else:
-                print(f"✓ Batch processing completed: {successful}/{len(results)} successful")
+                print(f"✓ Vessel batch processing completed: {successful}/{len(results)} successful")
+            print()
+
+        except Exception as e:
+            if Colors.supports_color():
+                print(f"{Colors.DIM_RED}Error: {e}{Colors.RESET}")
+            else:
+                print(f"Error: {e}")
+            print()
+
+    def _process_company_batch(self, company_list, output_format, output_file):
+        """Process batch of company names"""
+        # Progress callback function for companies
+        def progress_callback(current, total, company, status):
+            if Colors.supports_color():
+                if status == "processing":
+                    print(f"{Colors.DIM}[{current}/{total}] Processing company {company}...{Colors.RESET}")
+                elif status == "success":
+                    print(f"{Colors.DIM_GREEN}[{current}/{total}] ✓ {company} fleet retrieved{Colors.RESET}")
+                elif status == "not_found":
+                    print(f"{Colors.DIM_YELLOW}[{current}/{total}] ⚠ {company} not found{Colors.RESET}")
+                elif status == "error":
+                    print(f"{Colors.DIM_RED}[{current}/{total}] ✗ {company} error{Colors.RESET}")
+            else:
+                if status == "processing":
+                    print(f"[{current}/{total}] Processing company {company}...")
+                elif status == "success":
+                    print(f"[{current}/{total}] ✓ {company} fleet retrieved")
+                elif status == "not_found":
+                    print(f"[{current}/{total}] ⚠ {company} not found")
+                elif status == "error":
+                    print(f"[{current}/{total}] ✗ {company} error")
+
+        try:
+            if Colors.supports_color():
+                print(f"{Colors.DIM}Starting batch processing of {len(company_list)} companies...{Colors.RESET}")
+            else:
+                print(f"Starting batch processing of {len(company_list)} companies...")
+            print()
+
+            # Process batch with progress callback
+            results = self.client.search_companies_batch(
+                company_list,
+                progress_callback=progress_callback,
+                stop_on_error=False
+            )
+
+            print()
+            output = self.formatter.format_batch_fleet_info(results, output_format)
+            self._save_or_print_output(output, output_file, "Company Batch")
+
+            # Summary
+            successful = sum(1 for r in results if r.success)
+            total_vessels = sum(r.fleet_data.total_vessels for r in results if r.success and r.fleet_data)
+            if Colors.supports_color():
+                print(f"{Colors.DIM_GREEN}✓ Company batch processing completed: {successful}/{len(results)} companies successful ({total_vessels:,} total vessels){Colors.RESET}")
+            else:
+                print(f"✓ Company batch processing completed: {successful}/{len(results)} companies successful ({total_vessels:,} total vessels)")
             print()
 
         except Exception as e:

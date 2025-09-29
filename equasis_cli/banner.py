@@ -59,9 +59,16 @@ def get_version() -> str:
 
 def check_credentials() -> bool:
     """Check if Equasis credentials are configured"""
-    username = os.getenv('EQUASIS_USERNAME')
-    password = os.getenv('EQUASIS_PASSWORD')
-    return bool(username and password)
+    try:
+        from .credentials import get_credential_manager
+        credential_manager = get_credential_manager()
+        username, password = credential_manager.get_credentials()
+        return bool(username and password)
+    except ImportError:
+        # Fallback to environment variables if credential module not available
+        username = os.getenv('EQUASIS_USERNAME')
+        password = os.getenv('EQUASIS_PASSWORD')
+        return bool(username and password)
 
 def display_credentials_note() -> None:
     """Display a Claude Code-style colorized credentials setup note"""
@@ -74,11 +81,14 @@ def display_credentials_note() -> None:
         print(f"{Colors.YELLOW}│{Colors.RESET}{Colors.YELLOW}                                                                          │{Colors.RESET}")
         print(f"{Colors.YELLOW}│{Colors.RESET}{Colors.YELLOW} To use this tool, set your Equasis credentials:                         │{Colors.RESET}")
         print(f"{Colors.YELLOW}│{Colors.RESET}{Colors.YELLOW}                                                                          │{Colors.RESET}")
-        print(f"{Colors.YELLOW}│{Colors.RESET}{Colors.YELLOW}   Option 1: Create .env file in project directory:                      │{Colors.RESET}")
-        print(f"{Colors.YELLOW}│{Colors.RESET}{Colors.YELLOW}     EQUASIS_USERNAME=your_username                                       │{Colors.RESET}")
-        print(f"{Colors.YELLOW}│{Colors.RESET}{Colors.YELLOW}     EQUASIS_PASSWORD=your_password                                       │{Colors.RESET}")
+        print(f"{Colors.YELLOW}│{Colors.RESET}{Colors.YELLOW}   Option 1 (Recommended): Use credential manager:                       │{Colors.RESET}")
+        print(f"{Colors.YELLOW}│{Colors.RESET}{Colors.YELLOW}     equasis configure --setup                                            │{Colors.RESET}")
         print(f"{Colors.YELLOW}│{Colors.RESET}{Colors.YELLOW}                                                                          │{Colors.RESET}")
-        print(f"{Colors.YELLOW}│{Colors.RESET}{Colors.YELLOW}   Option 2: Use command line flags:                                      │{Colors.RESET}")
+        print(f"{Colors.YELLOW}│{Colors.RESET}{Colors.YELLOW}   Option 2: Set environment variables:                                   │{Colors.RESET}")
+        print(f"{Colors.YELLOW}│{Colors.RESET}{Colors.YELLOW}     export EQUASIS_USERNAME=your_username                                │{Colors.RESET}")
+        print(f"{Colors.YELLOW}│{Colors.RESET}{Colors.YELLOW}     export EQUASIS_PASSWORD=your_password                                │{Colors.RESET}")
+        print(f"{Colors.YELLOW}│{Colors.RESET}{Colors.YELLOW}                                                                          │{Colors.RESET}")
+        print(f"{Colors.YELLOW}│{Colors.RESET}{Colors.YELLOW}   Option 3: Use command line flags:                                      │{Colors.RESET}")
         print(f"{Colors.YELLOW}│{Colors.RESET}{Colors.YELLOW}     equasis --username your_user --password your_pass vessel --imo 123  │{Colors.RESET}")
         print(f"{Colors.YELLOW}│{Colors.RESET}{Colors.YELLOW}                                                                          │{Colors.RESET}")
         print(f"{Colors.YELLOW}└{'─' * 76}┘{Colors.RESET}")
@@ -88,11 +98,14 @@ def display_credentials_note() -> None:
         print("│                                                                        │")
         print("│ To use this tool, set your Equasis credentials:                       │")
         print("│                                                                        │")
-        print("│   Option 1: Create .env file in project directory:                    │")
-        print("│     EQUASIS_USERNAME=your_username                                     │")
-        print("│     EQUASIS_PASSWORD=your_password                                     │")
+        print("│   Option 1 (Recommended): Use credential manager:                     │")
+        print("│     equasis configure --setup                                          │")
         print("│                                                                        │")
-        print("│   Option 2: Use command line flags:                                   │")
+        print("│   Option 2: Set environment variables:                                │")
+        print("│     export EQUASIS_USERNAME=your_username                             │")
+        print("│     export EQUASIS_PASSWORD=your_password                             │")
+        print("│                                                                        │")
+        print("│   Option 3: Use command line flags:                                   │")
         print("│     equasis --username your_user --password your_pass vessel --imo 123│")
         print("│                                                                        │")
         print("└" + "─" * 76 + "┘")

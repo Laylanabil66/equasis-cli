@@ -9,7 +9,7 @@ from dataclasses import asdict
 from datetime import datetime
 
 from .parser import EquasisVesselData
-from .client import SimpleVesselInfo, FleetInfo, BatchResult, BatchSummary
+from .client import SimpleVesselInfo, FleetInfo, BatchResult, BatchSummary, CompanyBatchResult, CompanyBatchSummary
 
 
 class OutputFormatter:
@@ -287,4 +287,148 @@ Last Update:   {basic.last_update or 'N/A'}
                 output.append(f"{result.imo:<10} | {error_msg}")
 
         output.append("=" * 70)
+        return '\n'.join(output)
+
+    @staticmethod
+    def format_batch_fleet_info(results: List[CompanyBatchResult], output_format: str = 'table') -> str:
+        """Format batch company processing results"""
+        # Calculate summary statistics
+        total = len(results)
+        successful = sum(1 for r in results if r.success)
+        failed = total - successful
+        total_time = sum(r.processing_time for r in results)
+        total_vessels = sum(r.fleet_data.total_vessels for r in results if r.success and r.fleet_data)
+        failed_companies = [r.company_name for r in results if not r.success]
+
+        summary = CompanyBatchSummary(
+            total_companies=total,
+            successful=successful,
+            failed=failed,
+            total_vessels=total_vessels,
+            processing_time=total_time,
+            failed_companies=failed_companies,
+            timestamp=datetime.now().isoformat()
+        )
+
+        if output_format == 'json':
+            return OutputFormatter._format_batch_fleet_json(results, summary)
+        elif output_format == 'csv':
+            return OutputFormatter._format_batch_fleet_csv(results)
+        else:  # table format
+            return OutputFormatter._format_batch_fleet_table(results, summary)
+
+    @staticmethod
+    def _format_batch_fleet_json(results: List[CompanyBatchResult], summary: CompanyBatchSummary) -> str:
+        """Format batch fleet results as JSON"""
+        output_data = {
+            "batch_summary": {
+                "total_companies": summary.total_companies,
+                "successful": summary.successful,
+                "failed": summary.failed,
+                "total_vessels": summary.total_vessels,
+                "processing_time": round(summary.processing_time, 2),
+                "timestamp": summary.timestamp,
+                "failed_companies": summary.failed_companies
+            },
+            "results": []
+        }
+
+        for result in results:
+            if result.success and result.fleet_data:
+                result_entry = {
+                    "company_name": result.company_name,
+                    "success": True,
+                    "processing_time": round(result.processing_time, 2),
+                    "fleet_data": {
+                        "company_name": result.fleet_data.company_name,
+                        "total_vessels": result.fleet_data.total_vessels,
+                        "vessels": [asdict(vessel) for vessel in result.fleet_data.vessels]
+                    }
+                }
+            else:
+                result_entry = {
+                    "company_name": result.company_name,
+                    "success": False,
+                    "processing_time": round(result.processing_time, 2),
+                    "error": result.error_message or "Unknown error"
+                }
+
+            output_data["results"].append(result_entry)
+
+        return json.dumps(output_data, indent=2)
+
+    @staticmethod
+    def _format_batch_fleet_csv(results: List[CompanyBatchResult]) -> str:
+        """Format batch fleet results as CSV"""
+        lines = ["Company,IMO,Name,Flag,Type,DWT,GRT,YearBuilt,Status,Error"]
+
+        for result in results:
+            if result.success and result.fleet_data:
+                # Add each vessel with company name
+                for vessel in result.fleet_data.vessels:
+                    lines.append(
+                        f"{result.company_name},"
+                        f"{vessel.imo},"
+                        f"{vessel.name},"
+                        f"{vessel.flag},"
+                        f"{vessel.vessel_type or ''},"
+                        f"{vessel.dwt or ''},"
+                        f"{vessel.grt or ''},"
+                        f"{vessel.year_built or ''},"
+                        f"{vessel.status or ''},"
+                    )
+            else:
+                # Add error row for failed company
+                lines.append(f"{result.company_name},,,,,,,,\"{result.error_message or 'Unknown error'}\"")
+
+        return '\n'.join(lines)
+
+    @staticmethod
+    def _format_batch_fleet_table(results: List[CompanyBatchResult], summary: CompanyBatchSummary) -> str:
+        """Format batch fleet results as a table"""
+        output = []
+        output.append("\n" + "=" * 80)
+        output.append("COMPANY BATCH PROCESSING RESULTS")
+        output.append("=" * 80)
+        output.append(f"Total Companies: {summary.total_companies}")
+        output.append(f"Successful: {summary.successful}")
+        output.append(f"Failed: {summary.failed}")
+        output.append(f"Total Vessels: {summary.total_vessels:,}")
+        output.append(f"Processing Time: {summary.processing_time:.1f}s")
+        output.append(f"Timestamp: {summary.timestamp}")
+        output.append("")
+
+        # Successful company fleets
+        successful_results = [r for r in results if r.success and r.fleet_data]
+        if successful_results:
+            output.append("Successfully Retrieved Fleet Data:")
+            output.append("-" * 80)
+            output.append(f"{'Company':<30} | {'Vessels':<8} | {'Processing Time':<15}")
+            output.append("-" * 80)
+
+            for result in successful_results:
+                vessel_count = result.fleet_data.total_vessels
+                processing_time = f"{result.processing_time:.1f}s"
+                company_name = result.company_name[:29] if len(result.company_name) > 29 else result.company_name
+                output.append(
+                    f"{company_name:<30} | "
+                    f"{vessel_count:<8} | "
+                    f"{processing_time:<15}"
+                )
+
+        # Failed lookups
+        failed_results = [r for r in results if not r.success]
+        if failed_results:
+            output.append("")
+            output.append("Failed Company Lookups:")
+            output.append("-" * 80)
+            output.append(f"{'Company':<30} | {'Error':<48}")
+            output.append("-" * 80)
+
+            for result in failed_results:
+                error_msg = (result.error_message or "Unknown error")[:47]
+                company_name = result.company_name[:29] if len(result.company_name) > 29 else result.company_name
+                output.append(f"{company_name:<30} | {error_msg}")
+
+        output.append("=" * 80)
         return '\n'.join(output)

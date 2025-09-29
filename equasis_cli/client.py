@@ -140,6 +140,26 @@ class BatchSummary:
     timestamp: str = ""
 
 @dataclass
+class CompanyBatchResult:
+    """Result from batch company processing"""
+    company_name: str
+    success: bool
+    fleet_data: Optional['FleetInfo'] = None
+    error_message: Optional[str] = None
+    processing_time: float = 0.0
+
+@dataclass
+class CompanyBatchSummary:
+    """Summary of company batch processing operation"""
+    total_companies: int
+    successful: int
+    failed: int
+    total_vessels: int  # Sum across all fleets
+    processing_time: float
+    failed_companies: List[str]
+    timestamp: str = ""
+
+@dataclass
 class SimpleVesselInfo:
     """Simple vessel info for fleet/search operations"""
     imo: str
@@ -421,5 +441,77 @@ class EquasisClient:
             # Rate limiting - already handled in search_vessel_by_imo, but add extra safety
             if idx < len(imos):  # Don't delay after last vessel
                 time.sleep(0.1)  # Small additional delay between vessels
+
+        return results
+
+    def search_companies_batch(self, companies: List[str],
+                              progress_callback=None,
+                              stop_on_error: bool = False) -> List[CompanyBatchResult]:
+        """
+        Process multiple company names with progress tracking
+
+        Args:
+            companies: List of company names to process
+            progress_callback: Optional callback for progress updates (current, total, company, status)
+            stop_on_error: Whether to stop processing on first error
+
+        Returns:
+            List of CompanyBatchResult objects
+        """
+        import time
+        from datetime import datetime
+
+        results = []
+        start_time = time.time()
+
+        for idx, company in enumerate(companies, 1):
+            company_start = time.time()
+
+            # Call progress callback if provided
+            if progress_callback:
+                progress_callback(idx, len(companies), company, "processing")
+
+            try:
+                # Use existing method to get fleet data
+                fleet_data = self.get_fleet_info(company)
+
+                if fleet_data:
+                    result = CompanyBatchResult(
+                        company_name=company,
+                        success=True,
+                        fleet_data=fleet_data,
+                        processing_time=time.time() - company_start
+                    )
+                    if progress_callback:
+                        progress_callback(idx, len(companies), company, "success")
+                else:
+                    result = CompanyBatchResult(
+                        company_name=company,
+                        success=False,
+                        error_message="Company not found or no fleet data available",
+                        processing_time=time.time() - company_start
+                    )
+                    if progress_callback:
+                        progress_callback(idx, len(companies), company, "not_found")
+
+            except Exception as e:
+                result = CompanyBatchResult(
+                    company_name=company,
+                    success=False,
+                    error_message=str(e),
+                    processing_time=time.time() - company_start
+                )
+                if progress_callback:
+                    progress_callback(idx, len(companies), company, "error")
+
+                if stop_on_error:
+                    logger.error(f"Stopping company batch processing due to error: {e}")
+                    break
+
+            results.append(result)
+
+            # Rate limiting - already handled in get_fleet_info, but add extra safety
+            if idx < len(companies):  # Don't delay after last company
+                time.sleep(0.1)  # Small additional delay between companies
 
         return results
