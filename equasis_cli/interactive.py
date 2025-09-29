@@ -73,12 +73,23 @@ class InteractiveShell(cmd.Cmd):
         """
         params = {}
 
-        # Match /param value or /param "quoted value"
-        pattern = r'/(\w+)\s+(?:"([^"]+)"|(\S+))'
-        matches = re.findall(pattern, line)
+        # Match /param value or /param "quoted value" (handles both regular and smart quotes)
+        # Try different quote patterns in order
+        patterns = [
+            r'/(\w+)\s+"([^"]+)"',      # Regular double quotes
+            r'/(\w+)\s+"([^"]+)"',      # Smart left/right quotes
+            r'/(\w+)\s+"([^"]+)"',      # Smart quotes mixed
+            r"/(\w+)\s+'([^']+)'",      # Single quotes
+            r'/(\w+)\s+(\S+)',          # Unquoted values
+        ]
 
-        for param, quoted_val, unquoted_val in matches:
-            params[param] = quoted_val or unquoted_val
+        for pattern in patterns:
+            matches = re.findall(pattern, line)
+            for match in matches:
+                param = match[0]
+                value = match[1]
+                if param not in params:
+                    params[param] = value
 
         # Check if all required parameters are present
         all_required_present = all(
