@@ -241,16 +241,16 @@ equasis
 This launches a **modern professional TUI** with advanced features:
 
 **TUI Features:**
-- 🎯 **Fixed input area** at bottom (doesn't scroll away)
-- 📊 **Persistent status bar** showing connection, format, and operation status
-- 🎨 **Atom One Dark color scheme** (professional cyan-to-blue gradient banner)
-- ✨ **Context-aware slash menus** - Primary commands without `/`, parameters with `/`
-- 🔍 **Real-time filtering** - Type `/se` to filter to "search"
-- ❓ **Ephemeral help menu** - Press `?` to toggle keyboard shortcuts
-- 📜 **Vim/Less-style scrolling** - Press `Esc` for scroll mode, `i` to return
-- ⏳ **Animated loading indicators** - Spinner with shine effect during operations
-- 🧹 **Custom styled output** - User prompts in grey, results in default color
-- ⌨️ **Column-aligned menus** - Professional layout with descriptions aligned
+- **Fixed input area** at bottom (doesn't scroll away)
+- **Persistent status bar** showing connection, format, and operation status
+- **Gradient color scheme** (professional magenta-to-purple gradient banner)
+- **Context-aware ephemeral menus** - Press `?` for help, `Tab` for slash parameters
+- **Interactive company selection** - Automatic disambiguation for fleet queries
+- **Ephemeral help menu** - Press `?` to show available commands
+- **Vim/Less-style scrolling** - Navigate output with `j`/`k` keys
+- **Animated loading indicators** - Spinner with shine effect during operations
+- **Custom styled output** - Gradient ASCII art and syntax highlighting
+- **Auto-completion** - Tab completion for slash parameters
 
 **Example session:**
 ```
@@ -639,17 +639,26 @@ equasis
 You'll see the banner and enter interactive mode:
 
 ```
- _____ _____ _   _ _____ _____ _____ _____       _____ __    _____
-|   __|     | | |  _  |   __|     |   __|     |     |  |  |     |
-|   __|  |  | | |     |__   |-   -|__   |     |   --|  |__|  |  |
-|_____|__  _|___|__|__|_____|_____|_____|     |_____|_____|_____|
-         |__|
+                               _                 ___
+  ___  ____ ___  ______ ______(_)____      _____/ (_)
+ / _ \/ __ `/ / / / __ `/ ___/ / ___/_____/ ___/ / /
+/  __/ /_/ / /_/ / /_/ (__  ) (__  )_____/ /__/ / /
+\___/\__, /\__,_/\__,_/____/_/____/      \___/_/_/
+       /_/
 
-            Maritime Intelligence Tool
-                            Version 2.0.0
+Maritime Intelligence Tool                                         v2.0.0
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│ Important Disclaimers                                                    │
+└──────────────────────────────────────────────────────────────────────────┘
+• This tool is NOT associated with, endorsed by, or affiliated with Equasis
+• May break if Equasis changes their website structure
+• Users must monitor for changes and update parsing logic accordingly
+• Respect Equasis Terms of Service and rate limiting
+• Use for legitimate maritime research and safety purposes only
 
 Type 'help' for available commands or 'exit' to quit.
-Use /output with any command to save results to a file.
+Press ? for quick help.
 
 >
 ```
