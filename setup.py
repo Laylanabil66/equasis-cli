@@ -13,7 +13,7 @@ def read_readme():
 
 setup(
     name="equasis-cli",
-    version="1.0.0",
+    version="2.0.0",
     author="rhinonix",
     author_email="rhinonix.github.exclaim769@slmail.me",
     description="Command-line tool for accessing Equasis maritime data",
@@ -41,6 +41,7 @@ setup(
         "beautifulsoup4>=4.12.0",
         "lxml>=4.9.0",
         "python-dotenv>=1.0.0",
+        "prompt_toolkit>=3.0.0",
     ],
     entry_points={
         "console_scripts": [

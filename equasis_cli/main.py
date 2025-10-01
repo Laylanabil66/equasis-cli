@@ -28,7 +28,7 @@ def main():
         try:
             from .interactive import InteractiveShell
             shell = InteractiveShell()
-            shell.cmdloop()
+            shell.start()
             return
         except (KeyboardInterrupt, EOFError):
             print("\nGoodbye!")
@@ -95,7 +95,7 @@ def traditional_main():
         try:
             from .interactive import InteractiveShell
             shell = InteractiveShell()
-            shell.cmdloop()
+            shell.start()
             return
         except (KeyboardInterrupt, EOFError):
             print("\nGoodbye!")

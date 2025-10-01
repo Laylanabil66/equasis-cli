@@ -40,7 +40,7 @@ class Colors:
         return hasattr(sys.stdout, 'isatty') and sys.stdout.isatty()
 
 # Version information - should match setup.py
-__version__ = "1.0.0"
+__version__ = "2.0.0"
 
 BANNER_ART = r"""
                                _                 ___
@@ -233,6 +233,34 @@ def display_banner(show_banner: bool = True, show_info: bool = True) -> None:
             print("─" * 80)
         print()
 
+def get_interactive_banner() -> str:
+    """
+    Get banner text for interactive TUI mode
+    Returns plain text - styling will be applied by lexer with gradient
+    """
+    banner = f"""                               _                 ___
+  ___  ____ ___  ______ ______(_)____      _____/ (_)
+ / _ \\/ __ `/ / / / __ `/ ___/ / ___/_____/ ___/ / /
+/  __/ /_/ / /_/ / /_/ (__  ) (__  )_____/ /__/ / /
+\\___/\\__, /\\__,_/\\__,_/____/_/____/      \\___/_/_/
+       /_/
+
+Maritime Intelligence Tool                                         v{__version__}
+
+┌──────────────────────────────────────────────────────────────────────────┐
+│ Important Disclaimers                                                    │
+└──────────────────────────────────────────────────────────────────────────┘
+• This tool is NOT associated with, endorsed by, or affiliated with Equasis
+• May break if Equasis changes their website structure
+• Users must monitor for changes and update parsing logic accordingly
+• Respect Equasis Terms of Service and rate limiting
+• Use for legitimate maritime research and safety purposes only
+
+Type 'help' for available commands or 'exit' to quit.
+Press ? for quick help."""
+
+    return banner
+
 def display_compact_info() -> None:
     """Display minimal startup info for non-interactive use"""
     if sys.stdout.isatty():
@@ -335,3 +363,78 @@ def display_success_summary(operation: str, details: Optional[str] = None) -> No
             if details:
                 print(f"   {details}")
         print()
+
+class StatusBar:
+    """Persistent status bar for interactive mode (Claude Code style)"""
+
+    def __init__(self):
+        self.connected = False
+        self.last_result_success: Optional[bool] = None
+        self.last_result_message: str = ""
+        self.output_format: str = "table"
+        self.color_support = Colors.supports_color()
+
+    def set_connection_status(self, connected: bool) -> None:
+        """Update connection status"""
+        self.connected = connected
+
+    def set_last_result(self, success: bool, message: str = "") -> None:
+        """Update last command result"""
+        self.last_result_success = success
+        self.last_result_message = message
+
+    def set_format(self, format_type: str) -> None:
+        """Update output format"""
+        self.output_format = format_type
+
+    def clear_last_result(self) -> None:
+        """Clear last result (for commands that don't need result tracking)"""
+        self.last_result_success = None
+        self.last_result_message = ""
+
+    def render(self) -> str:
+        """Render status bar as a single line string"""
+        parts = []
+
+        # Connection status
+        if self.color_support:
+            if self.connected:
+                parts.append(f"{Colors.GREEN}●{Colors.RESET} {Colors.DIM}Connected{Colors.RESET}")
+            else:
+                parts.append(f"{Colors.DIM_RED}○{Colors.RESET} {Colors.DIM}Not connected{Colors.RESET}")
+        else:
+            if self.connected:
+                parts.append("● Connected")
+            else:
+                parts.append("○ Not connected")
+
+        # Output format
+        if self.color_support:
+            parts.append(f"{Colors.DIM}Format: {Colors.DIM_CYAN}{self.output_format}{Colors.RESET}")
+        else:
+            parts.append(f"Format: {self.output_format}")
+
+        # Last result (if available)
+        if self.last_result_success is not None:
+            if self.color_support:
+                if self.last_result_success:
+                    status_icon = f"{Colors.GREEN}✓{Colors.RESET}"
+                    result_text = self.last_result_message or "Success"
+                    parts.append(f"{status_icon} {Colors.DIM}{result_text}{Colors.RESET}")
+                else:
+                    status_icon = f"{Colors.RED}✗{Colors.RESET}"
+                    result_text = self.last_result_message or "Failed"
+                    parts.append(f"{status_icon} {Colors.DIM}{result_text}{Colors.RESET}")
+            else:
+                if self.last_result_success:
+                    parts.append(f"✓ {self.last_result_message or 'Success'}")
+                else:
+                    parts.append(f"✗ {self.last_result_message or 'Failed'}")
+
+        # Join with separators
+        if self.color_support:
+            separator = f" {Colors.DIM}|{Colors.RESET} "
+        else:
+            separator = " | "
+
+        return separator.join(parts)

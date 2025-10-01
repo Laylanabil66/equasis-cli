@@ -1,82 +1,896 @@
 #!/usr/bin/env python3
 """
-Interactive Shell for Equasis CLI
-Provides a REPL-style interface with slash command syntax similar to Claude Code
+Interactive Shell for Equasis CLI with proper Application layout
+Output stays above, prompt stays fixed at bottom
 """
 
-import cmd
 import re
 import os
 import sys
 import logging
-from typing import Dict, Optional, Tuple, Any
+from typing import Dict, Optional, Tuple
+
+from prompt_toolkit import Application
+from prompt_toolkit.layout import (
+    HSplit, Layout, Window, FloatContainer, Float,
+    ScrollbarMargin, ConditionalContainer, WindowAlign
+)
+from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
+from prompt_toolkit.buffer import Buffer
+from prompt_toolkit.key_binding import KeyBindings
+from prompt_toolkit.formatted_text import FormattedText, HTML, StyleAndTextTuples
+from prompt_toolkit.styles import Style
+from prompt_toolkit.lexers import Lexer
+from prompt_toolkit.completion import Completer, Completion, CompleteEvent
+from prompt_toolkit.document import Document
+from prompt_toolkit.filters import Condition
+
 from .client import EquasisClient
 from .formatter import OutputFormatter
-from .banner import display_banner, display_credentials_note, check_credentials, Colors
+from .banner import display_banner, display_credentials_note, check_credentials, Colors, get_interactive_banner
 from .credentials import get_credential_manager
 
 logger = logging.getLogger(__name__)
 
 
-class InteractiveShell(cmd.Cmd):
-    """Interactive shell for Equasis CLI with slash command syntax"""
-
-    intro = None  # We'll show banner in preloop
-    prompt = f"{Colors.DIM_CYAN if Colors.supports_color() else ''}> {Colors.RESET if Colors.supports_color() else ''}"
+class OutputLexer(Lexer):
+    """Custom lexer to style output buffer text with gradient for ASCII art"""
 
     def __init__(self):
-        super().__init__()
+        self.banner_end_line = None  # Track where banner ends
+        self.ascii_art_end_line = 5  # ASCII art is lines 0-5
+
+    def lex_document(self, document: Document) -> callable:
+        # Find where banner ends (after "Press ? for quick help.")
+        if self.banner_end_line is None:
+            for i, line in enumerate(document.lines):
+                if 'Press ? for quick help.' in line:
+                    self.banner_end_line = i
+                    break
+
+        def get_line_styles(line_number: int) -> StyleAndTextTuples:
+            try:
+                line = document.lines[line_number]
+
+                # User prompt lines (commands executed by user)
+                if line.startswith('❯ '):
+                    return [('class:user-prompt', line)]
+
+                # ASCII art gradient (lines 0-5): pink to purple
+                if line_number <= self.ascii_art_end_line:
+                    # Gradient: magenta #c678dd -> purple #a464c2 -> violet #8b4fa8
+                    gradient_colors = [
+                        'class:ascii-line-0',  # Lightest magenta
+                        'class:ascii-line-1',
+                        'class:ascii-line-2',
+                        'class:ascii-line-3',
+                        'class:ascii-line-4',
+                        'class:ascii-line-5',  # Darkest purple
+                    ]
+                    if line_number < len(gradient_colors):
+                        return [(gradient_colors[line_number], line)]
+
+                # "Maritime Intelligence Tool" line - title white, version grey
+                if 'Maritime Intelligence Tool' in line:
+                    # Split the line to style title and version separately
+                    if 'v' in line:
+                        parts = line.split('v')
+                        return [
+                            ('', parts[0]),  # "Maritime Intelligence Tool" in white
+                            ('class:banner-text', 'v' + parts[1])  # version in grey
+                        ]
+                    return [('', line)]
+
+                # Rest of banner - subdued grey
+                if self.banner_end_line is not None and line_number <= self.banner_end_line:
+                    return [('class:banner-text', line)]
+
+                # Normal output (results)
+                return [('', line)]
+            except IndexError:
+                return []
+        return get_line_styles
+
+
+class SlashCommandCompleter(Completer):
+    """Auto-completion for slash parameters"""
+
+    def __init__(self):
+        self.command_params = {
+            'vessel': ['/imo', '/format', '/output'],
+            'search': ['/name', '/format', '/output'],
+            'fleet': ['/company', '/format', '/output'],
+            'batch': ['/imos', '/file', '/companies', '/company-file', '/format', '/output'],
+            'format': [],
+            'status': [],
+            'clear': [],
+            'help': [],
+            'exit': [],
+            'quit': [],
+        }
+
+    def get_completions(self, document: Document, complete_event: CompleteEvent):
+        """Generate completions based on current input"""
+        text = document.text_before_cursor
+        words = text.split()
+
+        if not words:
+            return
+
+        # First word - complete command names
+        if len(words) == 1 and not text.endswith(' '):
+            for cmd in self.command_params.keys():
+                if cmd.startswith(words[0]):
+                    yield Completion(cmd, start_position=-len(words[0]))
+
+        # Slash parameter completion
+        elif '/' in text:
+            command = words[0] if words else ''
+            if command in self.command_params:
+                params = self.command_params[command]
+                last_word = words[-1] if words else ''
+                if last_word.startswith('/'):
+                    for param in params:
+                        if param.startswith(last_word):
+                            yield Completion(param, start_position=-len(last_word))
+
+
+class InteractiveShell:
+    """Interactive shell with proper layout - output above, prompt below"""
+
+    def __init__(self):
         self.client: Optional[EquasisClient] = None
         self.formatter = OutputFormatter()
         self.output_format = 'table'
         self.debug_mode = False
         self.logged_in = False
+        self.running = True
 
-    def preloop(self):
-        """Called once before the command loop starts"""
-        # Show banner and check credentials
-        display_banner(show_banner=True, show_info=True)
-        print()
+        # Connection and status tracking
+        self.connection_status = "Not connected"
+        self.last_operation = ""
 
-        if Colors.supports_color():
-            print(f"{Colors.DIM}Type 'help' for available commands or 'exit' to quit.{Colors.RESET}")
-            print(f"{Colors.DIM}Use /output with any command to save results to a file.{Colors.RESET}")
+        # Color support
+        self.color_support = Colors.supports_color()
+
+        # Menu visibility flags
+        self.show_help_menu = False
+        self.show_slash_menu = False
+        self.slash_menu_index = 0  # Selected index in slash menu
+
+        # Loading indicator state
+        self.is_loading = False
+        self.loading_message = ""
+        self.loading_detail = ""
+        self.spinner_frame = 0
+        self.shine_offset = 0
+
+        # Create buffers
+        # Output buffer with unlimited history (no max_line_count)
+        self.output_buffer = Buffer(read_only=True, multiline=True)
+
+        # Input buffer with command history enabled
+        from prompt_toolkit.history import InMemoryHistory
+        self.history = InMemoryHistory()
+        self.input_buffer = Buffer(
+            multiline=False,
+            completer=SlashCommandCompleter(),
+            history=self.history,  # Attach history object
+            enable_history_search=True,
+        )
+
+        # Setup key bindings
+        self.kb = KeyBindings()
+        self._setup_key_bindings()
+
+        # Create layout
+        self.layout = self._create_layout()
+
+        # Create application
+        self.app = Application(
+            layout=self.layout,
+            key_bindings=self.kb,
+            style=self._get_style(),
+            full_screen=True,
+            mouse_support=False,
+        )
+
+    def _setup_key_bindings(self):
+        """Setup custom key bindings"""
+        @self.kb.add('c-c')
+        def _(event):
+            """Ctrl+C: Cancel current input"""
+            self.input_buffer.text = ''
+            self.show_help_menu = False
+            self.show_slash_menu = False
+
+        @self.kb.add('c-d')
+        def _(event):
+            """Ctrl+D: Exit"""
+            event.app.exit()
+
+        @self.kb.add('enter', eager=True)
+        def _(event):
+            """Enter: Process command (menu just provides hints)"""
+            # Close menus
+            self.show_slash_menu = False
+            self.show_help_menu = False
+            self.slash_menu_index = 0
+            # Process the command as typed
+            self._process_input()
+
+        @self.kb.add('tab')
+        def _(event):
+            """Tab: Select from slash menu"""
+            if self.show_slash_menu:
+                # Insert selected command from filtered list
+                filtered_commands = self._get_filtered_commands()
+                if filtered_commands and self.slash_menu_index < len(filtered_commands):
+                    selected = filtered_commands[self.slash_menu_index][0]
+
+                    buffer_text = self.input_buffer.text
+                    slash_count = buffer_text.count('/')
+                    is_primary = slash_count == 0 or (slash_count == 1 and buffer_text.startswith('/'))
+
+                    if is_primary:
+                        # Primary command - replace everything (including leading / if present)
+                        self.input_buffer.text = selected + ' '
+                        self.input_buffer.cursor_position = len(self.input_buffer.text)
+                    else:
+                        # Parameter - replace from last / onwards
+                        last_slash_pos = buffer_text.rfind('/')
+                        if last_slash_pos >= 0:
+                            new_text = buffer_text[:last_slash_pos] + '/' + selected + ' '
+                            self.input_buffer.text = new_text
+                            self.input_buffer.cursor_position = len(new_text)
+
+                self.show_slash_menu = False
+                self.slash_menu_index = 0
+
+        # Command history navigation with Up/Down arrows
+        # Use eager=True to make these bindings take priority over buffer defaults
+        @self.kb.add('up', eager=True)
+        def _(event):
+            """Up arrow: Navigate menu, history, or scroll output"""
+            from prompt_toolkit.application import get_app
+            # Check if we're in scroll mode (output buffer focused)
+            if get_app().layout.has_focus(self.output_buffer):
+                # Scroll output up one line
+                self.output_buffer.cursor_up()
+            elif self.show_slash_menu:
+                # Navigate slash menu using filtered list count - DON'T modify buffer
+                filtered_commands = self._get_filtered_commands()
+                if filtered_commands:
+                    self.slash_menu_index = max(0, self.slash_menu_index - 1)
+                # Don't do anything else - prevents buffer modification
+            else:
+                buff = event.app.current_buffer
+                # Use the history object directly to get previous item
+                history_strings = list(buff.history.get_strings())
+                if history_strings:
+                    # Get current working index
+                    if not hasattr(self, '_history_index'):
+                        self._history_index = len(history_strings)
+
+                    self._history_index = max(0, self._history_index - 1)
+                    if self._history_index < len(history_strings):
+                        buff.text = history_strings[self._history_index]
+                        buff.cursor_position = len(buff.text)
+
+        @self.kb.add('down', eager=True)
+        def _(event):
+            """Down arrow: Navigate menu, history, or scroll output"""
+            from prompt_toolkit.application import get_app
+            # Check if we're in scroll mode (output buffer focused)
+            if get_app().layout.has_focus(self.output_buffer):
+                # Scroll output down one line
+                self.output_buffer.cursor_down()
+            elif self.show_slash_menu:
+                # Navigate slash menu using filtered list count - DON'T modify buffer
+                filtered_commands = self._get_filtered_commands()
+                if filtered_commands:
+                    self.slash_menu_index = min(len(filtered_commands) - 1, self.slash_menu_index + 1)
+                # Don't do anything else - prevents buffer modification
+            else:
+                buff = event.app.current_buffer
+                # Use the history object directly to get next item
+                history_strings = list(buff.history.get_strings())
+                if history_strings and hasattr(self, '_history_index'):
+                    self._history_index = min(len(history_strings), self._history_index + 1)
+
+                    if self._history_index < len(history_strings):
+                        buff.text = history_strings[self._history_index]
+                        buff.cursor_position = len(buff.text)
+                    else:
+                        # At the end of history, show empty prompt
+                        buff.text = ''
+                        buff.cursor_position = 0
+
+        # Scrolling keys for output buffer
+        # Multiple options for users without Fn key
+        @self.kb.add('pageup')
+        def _(event):
+            """Page Up: Scroll output up (requires Fn on Mac)"""
+            for _ in range(10):
+                self.output_buffer.cursor_up()
+
+        @self.kb.add('pagedown')
+        def _(event):
+            """Page Down: Scroll output down (requires Fn on Mac)"""
+            for _ in range(10):
+                self.output_buffer.cursor_down()
+
+        @self.kb.add('s-up')  # Shift+Up
+        def _(event):
+            """Shift+Up: Scroll output up one line"""
+            self.output_buffer.cursor_up()
+
+        @self.kb.add('s-down')  # Shift+Down
+        def _(event):
+            """Shift+Down: Scroll output down one line"""
+            self.output_buffer.cursor_down()
+
+        # Scroll mode: Press Esc to enter scroll mode (vim/less-style)
+        @self.kb.add('escape')
+        def _(event):
+            """Esc: Enter scroll mode (focus output buffer)"""
+            from prompt_toolkit.application import get_app
+            # Only enter scroll mode if not showing menus
+            if not self.show_help_menu and not self.show_slash_menu:
+                get_app().layout.focus(self.output_buffer)
+                self.last_operation = "Scroll mode • Press i or type to return to input"
+
+        # Return to input mode: Press 'i' or any letter starts typing
+        @self.kb.add('i')
+        def _(event):
+            """i: Return to input mode from scroll mode"""
+            from prompt_toolkit.application import get_app
+            # Check if we're focused on output buffer
+            if get_app().layout.has_focus(self.output_buffer):
+                # Return to input mode
+                get_app().layout.focus(self.input_buffer)
+                self.last_operation = ""
+            else:
+                # Already in input, insert 'i'
+                self.input_buffer.insert_text('i')
+
+        # Vim-style scrolling (work in both modes but better in scroll mode)
+        @self.kb.add('c-k')  # Ctrl+K
+        def _(event):
+            """Ctrl+K: Scroll output up"""
+            for _ in range(5):
+                self.output_buffer.cursor_up()
+            event.app.invalidate()
+
+        @self.kb.add('c-j')  # Ctrl+J
+        def _(event):
+            """Ctrl+J: Scroll output down"""
+            for _ in range(5):
+                self.output_buffer.cursor_down()
+            event.app.invalidate()
+
+        @self.kb.add('?')
+        def _(event):
+            """? key: Toggle help menu (simple on/off)"""
+            self.show_help_menu = not self.show_help_menu
+            self.show_slash_menu = False
+
+        @self.kb.add('/')
+        def _(event):
+            """/ key: Insert / and show slash menu"""
+            self.input_buffer.insert_text('/')
+            self.show_slash_menu = True
+            self.show_help_menu = False
+            self.slash_menu_index = 0
+
+        @self.kb.add('backspace')
+        def _(event):
+            """Backspace: Hide slash menu if / is deleted, reset index on filter change"""
+            buff = event.app.current_buffer
+            # Delete character first
+            if buff.text:
+                buff.delete_before_cursor(count=1)
+            # Check if buffer no longer starts with /
+            if not buff.text.startswith('/'):
+                self.show_slash_menu = False
+                self.slash_menu_index = 0
+            else:
+                # Reset index when filter changes
+                self.slash_menu_index = 0
+
+    def _create_help_menu_content(self):
+        """Generate help menu text"""
+        return FormattedText([
+            ('class:menu-text', '/              For commands\n'),
+            ('class:menu-text', 'Up/Down        Navigate command history\n'),
+            ('class:menu-text', 'Esc            Enter scroll mode (navigate output)\n'),
+            ('class:menu-text', 'i              Return to input mode\n'),
+            ('class:menu-text', 'Ctrl+K/J       Quick scroll (5 lines)\n'),
+            ('class:menu-text', 'Page Up/Down   Scroll output\n'),
+            ('class:menu-text', 'Shift+Up/Down  Scroll output (one line)\n'),
+            ('class:menu-text', '\n'),
+            ('class:menu-text', 'Ctrl+C         Cancel current input\n'),
+            ('class:menu-text', 'Ctrl+D         Exit'),
+        ])
+
+    def _get_filtered_commands(self):
+        """Get list of commands/parameters filtered by current input"""
+        buffer_text = self.input_buffer.text
+
+        # Check if this is at the start (main commands) or after a command (parameters)
+        parts = buffer_text.split()
+
+        # If we're at the beginning or typing the first /command
+        if len(parts) <= 1 or not buffer_text.count('/'):
+            all_commands = [
+                ('vessel', 'Get vessel information by IMO'),
+                ('search', 'Search vessels by name or IMO'),
+                ('fleet', 'Get company fleet information'),
+                ('batch', 'Process multiple vessels/companies'),
+                ('format', 'Set default output format'),
+                ('status', 'Show connection status'),
+                ('clear', 'Clear output screen'),
+                ('help', 'Show detailed help for command'),
+                ('exit', 'Exit interactive mode'),
+            ]
+
+            if buffer_text.startswith('/'):
+                filter_text = buffer_text[1:].lower()
+                if filter_text:
+                    return [(cmd, desc) for cmd, desc in all_commands if filter_text in cmd.lower()]
+                else:
+                    return all_commands
+            return all_commands
+
+        # If typing a parameter (second / or later)
         else:
-            print("Type 'help' for available commands or 'exit' to quit.")
-            print("Use /output with any command to save results to a file.")
-        print()
+            # Determine which command was typed to show relevant parameters
+            first_part = parts[0].lower()
 
-    def parseline(self, line):
-        """Override parseline to handle empty lines gracefully"""
-        if not line.strip():
-            return '', '', line
-        return super().parseline(line)
+            # Define parameters for each command
+            if first_part == 'vessel':
+                params = [
+                    ('imo', 'IMO number (required)'),
+                    ('format', 'Output format: table, json, csv'),
+                    ('output', 'Save to file'),
+                ]
+            elif first_part == 'search':
+                params = [
+                    ('name', 'Vessel name to search'),
+                    ('imo', 'IMO number to search'),
+                    ('format', 'Output format: table, json, csv'),
+                    ('output', 'Save to file'),
+                ]
+            elif first_part == 'fleet':
+                params = [
+                    ('company', 'Company name (required)'),
+                    ('format', 'Output format: table, json, csv'),
+                    ('output', 'Save to file'),
+                ]
+            elif first_part == 'batch':
+                params = [
+                    ('imos', 'Comma-separated IMO numbers'),
+                    ('file', 'File with IMO numbers'),
+                    ('companies', 'Comma-separated company names'),
+                    ('company-file', 'File with company names'),
+                    ('format', 'Output format: table, json, csv'),
+                    ('output', 'Save to file'),
+                ]
+            else:
+                # Default common parameters
+                params = [
+                    ('format', 'Output format: table, json, csv'),
+                    ('output', 'Save to file'),
+                ]
 
-    def emptyline(self):
-        """Override to do nothing on empty line (instead of repeating last command)"""
-        pass
+            # Filter parameters based on what's being typed after the last /
+            last_slash_pos = buffer_text.rfind('/')
+            if last_slash_pos >= 0:
+                filter_text = buffer_text[last_slash_pos + 1:].lower()
+                if filter_text:
+                    return [(cmd, desc) for cmd, desc in params if filter_text in cmd.lower()]
+                else:
+                    return params
+
+            return params
+
+    def _create_slash_menu_content(self):
+        """Generate slash command menu text with selection highlighting and filtering"""
+        commands = self._get_filtered_commands()
+
+        # Ensure index is within bounds
+        if self.slash_menu_index >= len(commands):
+            self.slash_menu_index = len(commands) - 1 if commands else 0
+
+        # Determine if we're showing primary commands or parameters
+        buffer_text = self.input_buffer.text
+        slash_count = buffer_text.count('/')
+        is_primary = slash_count == 0 or (slash_count == 1 and buffer_text.startswith('/'))
+
+        # Find max command length for alignment
+        max_cmd_len = max(len(cmd) for cmd, _ in commands) if commands else 0
+        # Add 1 for the / prefix on parameters
+        if not is_primary:
+            max_cmd_len += 1
+
+        lines = []
+        for i, (cmd, desc) in enumerate(commands):
+            # Format: primary commands have no /, parameters have /
+            prefix = '' if is_primary else '/'
+            full_cmd = f'{prefix}{cmd}'
+
+            # Calculate padding to align descriptions
+            padding = ' ' * (max_cmd_len - len(full_cmd) + 4)
+
+            if i == self.slash_menu_index:
+                # Highlighted item - colored
+                lines.append(('class:menu-item-selected', full_cmd))
+                lines.append(('class:menu-desc-selected', f'{padding}{desc}'))
+            else:
+                # Normal item - grey
+                lines.append(('class:menu-item-unselected', full_cmd))
+                lines.append(('class:menu-desc-unselected', f'{padding}{desc}'))
+
+            if i < len(commands) - 1:
+                lines.append(('', '\n'))
+
+        return FormattedText(lines)
+
+    def _create_layout(self):
+        """Create the application layout"""
+        # Output window (scrollable, takes most space)
+        output_window = Window(
+            content=BufferControl(
+                buffer=self.output_buffer,
+                lexer=OutputLexer(),  # Use custom lexer to style user prompts
+            ),
+            wrap_lines=True,
+            # Scrollbar is added via ScrollbarMargin in prompt_toolkit
+            right_margins=[ScrollbarMargin(display_arrows=True)],
+        )
+
+        # Separator line
+        separator = Window(
+            height=1,
+            char='─',
+            style='class:separator',
+        )
+
+        # Input prompt window (fixed at bottom)
+        input_window = Window(
+            content=BufferControl(
+                buffer=self.input_buffer,
+                focusable=True,
+            ),
+            height=1,
+            dont_extend_height=True,
+        )
+
+        # Prompt character ("❯ ")
+        prompt_window = Window(
+            content=FormattedTextControl(
+                lambda: FormattedText([('class:prompt', '❯ ')])
+            ),
+            width=2,
+            dont_extend_width=True,
+        )
+
+        # Bottom toolbar (status bar)
+        def get_toolbar_text():
+            parts = []
+            if self.logged_in:
+                parts.append(('class:status-connected', '● Connected'))
+            else:
+                parts.append(('class:status-disconnected', '○ Not connected'))
+
+            parts.append(('class:status-dim', f' • Format: '))
+            parts.append(('class:status-format', self.output_format))
+
+            if self.last_operation:
+                parts.append(('class:status-dim', f' • {self.last_operation}'))
+            else:
+                parts.append(('class:status-dim', ' • Press ? for help'))
+
+            return FormattedText(parts)
+
+        toolbar = Window(
+            content=FormattedTextControl(get_toolbar_text),
+            height=1,
+            style='class:bottom-toolbar',
+        )
+
+        # Help menu (ephemeral, appears below prompt)
+        help_menu = ConditionalContainer(
+            Window(
+                content=FormattedTextControl(self._create_help_menu_content),
+                height=9,
+                style='class:menu',
+            ),
+            filter=Condition(lambda: self.show_help_menu),
+        )
+
+        # Slash command menu (ephemeral, appears below prompt)
+        slash_menu = ConditionalContainer(
+            Window(
+                content=FormattedTextControl(self._create_slash_menu_content),
+                height=9,
+                style='class:menu',
+            ),
+            filter=Condition(lambda: self.show_slash_menu),
+        )
+
+        # Loading indicator (appears above input when processing)
+        def get_loading_text():
+            parts = []
+            if self.is_loading:
+                # Animated spinner
+                spinner_chars = ['◐', '◓', '◑', '◒']
+                spinner = spinner_chars[self.spinner_frame % len(spinner_chars)]
+                parts.append(('class:loading-spinner', f'{spinner} '))
+
+                # Shine effect on message text - sweeping highlight
+                message = self.loading_message
+                if message:
+                    # Create shine effect with a bright highlight sweeping left to right
+                    shined_text = []
+                    shine_width = 4  # Width of the shine effect
+                    # Position wraps around with padding so shine fully exits before restarting
+                    shine_pos = (self.shine_offset % (len(message) + shine_width * 2)) - shine_width
+
+                    for i, char in enumerate(message):
+                        # Calculate distance from shine center
+                        distance = i - shine_pos
+
+                        # Shine gradient: bright in center, fades out
+                        if distance == 0:
+                            # Center of shine - brightest (white/very bright)
+                            shined_text.append(('class:loading-message-shine-center', char))
+                        elif distance in [1, -1]:
+                            # Near shine - bright blue
+                            shined_text.append(('class:loading-message-shine-near', char))
+                        elif distance in [2, -2]:
+                            # Edge of shine - normal blue
+                            shined_text.append(('class:loading-message-shine-edge', char))
+                        else:
+                            # Outside shine - dimmed
+                            shined_text.append(('class:loading-message', char))
+                    parts.extend(shined_text)
+
+                if self.loading_detail:
+                    parts.append(('class:loading-detail', f'  {self.loading_detail}'))
+            return FormattedText(parts)
+
+        loading_indicator = ConditionalContainer(
+            Window(
+                content=FormattedTextControl(get_loading_text),
+                height=1,
+                style='class:loading',
+            ),
+            filter=Condition(lambda: self.is_loading),
+        )
+
+        # Combine prompt + input on same line
+        from prompt_toolkit.layout.containers import VSplit
+        input_line = VSplit([prompt_window, input_window])
+
+        # Stack everything vertically
+        root_container = HSplit([
+            output_window,      # Top: scrollable output
+            separator,          # Separator line
+            loading_indicator,  # Loading status (conditional)
+            input_line,         # Middle: prompt + input
+            help_menu,          # Ephemeral help menu (conditional)
+            slash_menu,         # Ephemeral slash menu (conditional)
+            separator,          # Separator line
+            toolbar,            # Bottom: status bar
+        ])
+
+        return Layout(root_container, focused_element=self.input_buffer)
+
+    def _get_style(self):
+        """Define color style for prompt_toolkit"""
+        return Style.from_dict({
+            # Separator
+            'separator': 'fg:#5c6370 bg:default',
+
+            # Bottom toolbar
+            'bottom-toolbar': 'fg:#abb2bf bg:default noreverse',
+
+            # Status bar colors
+            'status-connected': 'fg:#98c379 bg:default noreverse',
+            'status-disconnected': 'fg:#e06c75 bg:default noreverse',
+            'status-dim': 'fg:#5c6370 bg:default noreverse',
+            'status-format': 'fg:#61afef bg:default noreverse',
+            'status-warning': 'fg:#e5c07b bg:default noreverse',
+            'prompt': 'fg:#abb2bf bg:default noreverse',  # White/default color
+
+            # Output buffer
+            'user-prompt': 'fg:#5c6370 bg:default noreverse',  # Subdued grey for user prompts
+            'banner-text': 'fg:#5c6370 bg:default noreverse',  # Subdued grey for banner
+
+            # ASCII art gradient (cyan to blue - heavier on blue)
+            'ascii-line-0': 'fg:#56b6c2 bg:default noreverse',  # Cyan (top)
+            'ascii-line-1': 'fg:#5caec8 bg:default noreverse',  # Cyan-blue
+            'ascii-line-2': 'fg:#5fa9d5 bg:default noreverse',  # More blue
+            'ascii-line-3': 'fg:#60abe0 bg:default noreverse',  # Much more blue
+            'ascii-line-4': 'fg:#61aeea bg:default noreverse',  # Almost full blue
+            'ascii-line-5': 'fg:#61afef bg:default noreverse',  # Blue (matches prompt)
+
+            # Ephemeral menus
+            'menu': 'bg:default noreverse',
+            'menu-item-unselected': 'fg:#5c6370 bg:default noreverse',  # Grey when not selected
+            'menu-desc-unselected': 'fg:#5c6370 bg:default noreverse',  # Grey when not selected
+            'menu-item-selected': 'fg:#61afef bold bg:default noreverse',  # Blue when selected
+            'menu-desc-selected': 'fg:#61afef bg:default noreverse',  # Blue when selected (same as command)
+            'menu-text': 'fg:#5c6370 bg:default noreverse',  # For help menu
+
+            # Loading indicator
+            'loading': 'bg:default noreverse',
+            'loading-spinner': 'fg:#61afef bg:default noreverse',  # Blue spinner (same as prompt)
+            'loading-message': 'fg:#61afef bg:default noreverse',  # Same blue as prompt (outside shine)
+            'loading-message-shine-edge': 'fg:#61afef bg:default noreverse',  # Same blue (edge of shine)
+            'loading-message-shine-near': 'fg:#7dc4f4 bold bg:default noreverse',  # Bright blue (near shine)
+            'loading-message-shine-center': 'fg:#ffffff bold bg:default noreverse',  # White/very bright (center of shine)
+            'loading-detail': 'fg:#5c6370 bg:default noreverse',  # Grey for detail messages
+
+            # Completion menu
+            'completion-menu': 'bg:default noreverse',
+            'completion-menu.completion': 'fg:#abb2bf bg:default noreverse',
+            'completion-menu.completion.current': 'fg:#61afef bold bg:default noreverse',
+            'completion-menu.meta': 'fg:#5c6370 bg:default noreverse',
+            'scrollbar.background': 'bg:default noreverse',
+            'scrollbar.button': 'bg:default noreverse',
+        })
+
+    def _append_output(self, text: str):
+        """Append text to output buffer"""
+        # Temporarily make buffer writable to append text
+        self.output_buffer.read_only = lambda: False
+        current = self.output_buffer.text
+        new_text = current + text + '\n' if current else text + '\n'
+        self.output_buffer.set_document(Document(text=new_text, cursor_position=len(new_text)))
+        self.output_buffer.read_only = lambda: True  # Make read-only again
+
+    def _process_input(self):
+        """Process the current input command"""
+        command_text = self.input_buffer.text.strip()
+
+        if not command_text:
+            return
+
+        # Add to history before clearing
+        self.history.append_string(command_text)
+
+        # Reset history index for next navigation
+        self._history_index = len(list(self.history.get_strings()))
+
+        # Clear input immediately for better UX
+        self.input_buffer.text = ''
+
+        # Show the command in output with special prefix for styling
+        # Use a unique prefix that can be styled by a lexer
+        self._append_output(f"❯ {command_text}")
+
+        # Handle special commands
+        if command_text == 'exit' or command_text == 'quit':
+            self.app.exit()
+            return
+
+        if command_text == 'clear':
+            # Clear the output buffer (make it writable first)
+            self.output_buffer.read_only = lambda: False
+            self.output_buffer.set_document(Document(text='', cursor_position=0))
+            self.output_buffer.read_only = lambda: True
+            return
+
+        # Process command in background task to allow UI updates
+        async def process_async():
+            import asyncio
+
+            # Show loading indicator
+            self.is_loading = True
+            self.loading_message = "Processing..."
+            self.loading_detail = ""
+            self.spinner_frame = 0
+            self.shine_offset = 0
+            self.app.invalidate()
+
+            # Animation task to update spinner and shine
+            animation_counter = 0
+            async def animate():
+                nonlocal animation_counter
+                while self.is_loading:
+                    await asyncio.sleep(0.1)  # 10 FPS animation
+                    animation_counter += 1
+
+                    # Update spinner every 2 frames (slower rotation)
+                    if animation_counter % 2 == 0:
+                        self.spinner_frame += 1
+
+                    # Update shine every frame (smooth sweep)
+                    self.shine_offset += 1
+                    self.app.invalidate()
+
+            # Start animation task
+            animation_task = asyncio.create_task(animate())
+
+            # Run the synchronous command in executor
+            loop = asyncio.get_event_loop()
+
+            try:
+                await loop.run_in_executor(None, self._process_command, command_text)
+            finally:
+                # Hide loading indicator
+                self.is_loading = False
+                self.loading_message = ""
+                self.loading_detail = ""
+                self.app.invalidate()
+
+                # Wait for animation to stop
+                await animation_task
+
+        # Create background task
+        self.app.create_background_task(process_async())
+
+    def _process_command(self, line: str):
+        """Process a command line"""
+        # Parse command
+        parts = line.split(maxsplit=1)
+        if not parts:
+            return
+
+        command = parts[0].lower()
+        args = parts[1] if len(parts) > 1 else ''
+
+        # Route to command handlers
+        command_map = {
+            'vessel': self._cmd_vessel,
+            'search': self._cmd_search,
+            'fleet': self._cmd_fleet,
+            'batch': self._cmd_batch,
+            'format': self._cmd_format,
+            'status': self._cmd_status,
+            'help': self._cmd_help,
+        }
+
+        handler = command_map.get(command)
+        if handler:
+            # Redirect stdout/stderr to capture any print statements
+            import io
+            old_stdout = sys.stdout
+            old_stderr = sys.stderr
+            sys.stdout = io.StringIO()
+            sys.stderr = io.StringIO()
+
+            try:
+                handler(args)
+
+                # Get any captured output
+                stdout_output = sys.stdout.getvalue()
+                stderr_output = sys.stderr.getvalue()
+
+                if stdout_output:
+                    self._append_output(stdout_output.rstrip())
+                if stderr_output:
+                    self._append_output(stderr_output.rstrip())
+            finally:
+                # Restore stdout/stderr
+                sys.stdout = old_stdout
+                sys.stderr = old_stderr
+        else:
+            self._append_output(f"Unknown command: {command}")
+            self._append_output("Type 'help' for available commands")
 
     def parse_slash_command(self, line: str, expected_params: Dict[str, bool]) -> Tuple[Dict[str, str], bool]:
-        """
-        Parse slash parameters like /imo 1234567 /format json
-
-        Args:
-            line: The command line to parse
-            expected_params: Dict of {param_name: required} indicating expected parameters
-
-        Returns:
-            Tuple of (parsed_params, all_required_present)
-        """
+        """Parse slash parameters"""
         params = {}
 
-        # Match /param value or /param "quoted value" (handles both regular and smart quotes)
-        # Try different quote patterns in order
         patterns = [
-            r'/(\w+)\s+"([^"]+)"',      # Regular double quotes
-            r'/(\w+)\s+"([^"]+)"',      # Smart left/right quotes
-            r'/(\w+)\s+"([^"]+)"',      # Smart quotes mixed
-            r"/(\w+)\s+'([^']+)'",      # Single quotes
-            r'/(\w+)\s+(\S+)',          # Unquoted values
+            r'/(\w+)\s+"([^"]+)"',
+            r'/(\w+)\s+"([^"]+)"',
+            r'/(\w+)\s+"([^"]+)"',
+            r"/(\w+)\s+'([^']+)'",
+            r'/(\w+)\s+(\S+)',
         ]
 
         for pattern in patterns:
@@ -87,7 +901,6 @@ class InteractiveShell(cmd.Cmd):
                 if param not in params:
                     params[param] = value
 
-        # Check if all required parameters are present
         all_required_present = all(
             param in params
             for param, required in expected_params.items()
@@ -97,877 +910,220 @@ class InteractiveShell(cmd.Cmd):
         return params, all_required_present
 
     def ensure_authenticated(self) -> bool:
-        """Ensure client is authenticated, prompt for credentials if needed"""
+        """Ensure client is authenticated"""
         if not self.client:
-            # Check for credentials using new credential manager
             credential_manager = get_credential_manager()
             username, password = credential_manager.get_credentials()
 
             if not username or not password:
-                print()
-                display_credentials_note()
+                self._append_output("\nNo credentials found. Please configure credentials first.")
+                self._append_output("Run: equasis configure --setup")
                 return False
 
             try:
-                if Colors.supports_color():
-                    print(f"{Colors.DIM}Connecting to Equasis...{Colors.RESET}")
-                else:
-                    print("Connecting to Equasis...")
+                self.loading_message = "Connecting..."
+                self.loading_detail = "Authenticating with Equasis"
+                self.last_operation = "Connecting..."
 
                 self.client = EquasisClient(username, password)
                 self.logged_in = self.client.login()
 
                 if self.logged_in:
-                    if Colors.supports_color():
-                        print(f"{Colors.DIM_GREEN}Connected successfully{Colors.RESET}")
-                    else:
-                        print("Connected successfully")
-                    print()
+                    self.connection_status = "Connected"
+                    self.last_operation = ""
                 else:
-                    if Colors.supports_color():
-                        print(f"{Colors.DIM_RED}Authentication failed{Colors.RESET}")
-                    else:
-                        print("Authentication failed")
+                    self._append_output("✗ Authentication failed")
+                    self.last_operation = "Auth failed"
                     return False
 
             except Exception as e:
-                if Colors.supports_color():
-                    print(f"{Colors.DIM_RED}Connection error: {e}{Colors.RESET}")
-                else:
-                    print(f"Connection error: {e}")
+                self._append_output(f"✗ Connection error: {e}")
+                self.last_operation = "Connection error"
                 return False
 
-        # Check if still logged in
         if not self.logged_in:
-            if Colors.supports_color():
-                print(f"{Colors.DIM}Reconnecting to Equasis...{Colors.RESET}")
-            else:
-                print("Reconnecting to Equasis...")
+            self.last_operation = "Reconnecting..."
             self.logged_in = self.client.login()
+            self.last_operation = "" if self.logged_in else "Reconnect failed"
 
         return self.logged_in
 
-    def _handle_output_params(self, params):
-        """Handle output format and file parameters"""
-        # Set output format if specified (support both /format and /output)
-        output_format = params.get('format') or self.output_format
-        output_file = None
-
-        # Handle /output parameter
-        if 'output' in params:
-            output_value = params['output']
-            # Check if it's a filename (contains a dot) or just a format
-            if '.' in output_value:
-                output_file = output_value
-                # Extract format from filename
-                file_ext = output_value.split('.')[-1].lower()
-                if file_ext in ['json', 'csv']:
-                    output_format = file_ext
-            else:
-                # It's just a format specification
-                if output_value in ['table', 'json', 'csv']:
-                    output_format = output_value
-
-        # Validate format
-        if output_format not in ['table', 'json', 'csv']:
-            if Colors.supports_color():
-                print(f"{Colors.DIM_RED}Error: Invalid format. Use table, json, or csv{Colors.RESET}")
-            else:
-                print("Error: Invalid format. Use table, json, or csv")
-            return None, None
-
-        return output_format, output_file
-
-    def _save_or_print_output(self, output, output_file, operation_name):
-        """Save output to file or print to screen"""
-        if output_file:
-            # Save to file
-            with open(output_file, 'w') as f:
-                f.write(output)
-            if Colors.supports_color():
-                print(f"{Colors.DIM_GREEN}✓ {operation_name} data saved to {output_file}{Colors.RESET}")
-            else:
-                print(f"✓ {operation_name} data saved to {output_file}")
-        else:
-            # Print to screen
-            print(output)
-
-    def do_vessel(self, line: str):
-        """
-        Get comprehensive vessel information
-        Usage: vessel /imo 1234567 [/format table|json|csv] [/output filename]
-
-        Examples:
-          vessel /imo 9074729
-          vessel /imo 8515128 /format json
-          vessel /imo 9074729 /output vessel_data.json
-        """
-        if not line.strip():
-            self.help_vessel()
-            return
-
+    def _cmd_vessel(self, args: str):
+        """Handle vessel command"""
         expected_params = {'imo': True, 'format': False, 'output': False}
-        params, all_required = self.parse_slash_command(line, expected_params)
+        params, all_required = self.parse_slash_command(args, expected_params)
 
         if not all_required:
-            if Colors.supports_color():
-                print(f"{Colors.DIM_RED}Error: Missing required parameter /imo{Colors.RESET}")
-            else:
-                print("Error: Missing required parameter /imo")
-            self.help_vessel()
+            self._append_output("Error: Missing required parameter /imo")
+            self._append_output("Usage: vessel /imo <IMO_NUMBER> [/format table|json|csv]")
             return
 
         if not self.ensure_authenticated():
             return
 
-        # Handle output parameters
-        output_format, output_file = self._handle_output_params(params)
-        if output_format is None:
-            return
+        output_format = params.get('format', self.output_format)
+        output_file = params.get('output')
 
         try:
-            if Colors.supports_color():
-                print(f"{Colors.DIM}Fetching vessel data for IMO {params['imo']}...{Colors.RESET}")
-            else:
-                print(f"Fetching vessel data for IMO {params['imo']}...")
+            self.loading_message = "Osinting..."
+            self.loading_detail = f"Searching IMO {params['imo']}"
+            self.last_operation = f"Fetching IMO {params['imo']}..."
 
             vessel = self.client.search_vessel_by_imo(params['imo'])
 
             if vessel:
-                print()
                 output = self.formatter.format_vessel_info(vessel, output_format)
-                self._save_or_print_output(output, output_file, "Vessel")
-
-                if Colors.supports_color():
-                    print(f"{Colors.DIM_GREEN}✓ Vessel lookup completed{Colors.RESET}")
+                if output_file:
+                    with open(output_file, 'w') as f:
+                        f.write(output)
+                    self._append_output(f"✓ Vessel data saved to {output_file}")
                 else:
-                    print("✓ Vessel lookup completed")
-                print()
+                    self._append_output(output)
+                self.last_operation = f"✓ Vessel {params['imo']} found"
             else:
-                if Colors.supports_color():
-                    print(f"{Colors.DIM_RED}No vessel found with IMO: {params['imo']}{Colors.RESET}")
-                else:
-                    print(f"No vessel found with IMO: {params['imo']}")
-                print()
+                self._append_output(f"No vessel found with IMO: {params['imo']}")
+                self.last_operation = f"✗ Vessel {params['imo']} not found"
 
         except Exception as e:
-            if Colors.supports_color():
-                print(f"{Colors.DIM_RED}Error: {e}{Colors.RESET}")
-            else:
-                print(f"Error: {e}")
-            print()
+            self._append_output(f"Error: {e}")
+            self.last_operation = f"✗ Error"
 
-    def do_search(self, line: str):
-        """
-        Search for vessels by name
-        Usage: search /name "vessel name" [/format table|json|csv]
+    def _cmd_search(self, args: str):
+        """Handle search command"""
+        expected_params = {'name': False, 'imo': False, 'format': False, 'output': False}
+        params, _ = self.parse_slash_command(args, expected_params)
 
-        Examples:
-          search /name "MAERSK"
-          search /name "EVER GIVEN" /format json
-        """
-        if not line.strip():
-            self.help_search()
-            return
-
-        expected_params = {'name': True, 'format': False, 'output': False}
-        params, all_required = self.parse_slash_command(line, expected_params)
-
-        if not all_required:
-            if Colors.supports_color():
-                print(f"{Colors.DIM_RED}Error: Missing required parameter /name{Colors.RESET}")
-            else:
-                print("Error: Missing required parameter /name")
-            self.help_search()
+        # Require either /name or /imo
+        if not params.get('name') and not params.get('imo'):
+            self._append_output("Error: Missing required parameter /name or /imo")
             return
 
         if not self.ensure_authenticated():
             return
 
         output_format = params.get('format', self.output_format)
-        if output_format not in ['table', 'json', 'csv']:
-            if Colors.supports_color():
-                print(f"{Colors.DIM_RED}Error: Invalid format. Use table, json, or csv{Colors.RESET}")
-            else:
-                print("Error: Invalid format. Use table, json, or csv")
-            return
 
         try:
-            if Colors.supports_color():
-                print(f"{Colors.DIM}Searching for vessels matching '{params['name']}'...{Colors.RESET}")
+            if params.get('imo'):
+                # Search by IMO
+                self.last_operation = f"Searching IMO '{params['imo']}'..."
+                vessels = self.client.search_vessel_by_name(params['imo'])
             else:
-                print(f"Searching for vessels matching '{params['name']}'...")
-
-            vessels = self.client.search_vessel_by_name(params['name'])
+                # Search by name
+                self.last_operation = f"Searching '{params['name']}'..."
+                vessels = self.client.search_vessel_by_name(params['name'])
 
             if vessels:
-                print()
                 output = self.formatter.format_simple_vessel_list(vessels, output_format)
-                print(output)
-
-                if Colors.supports_color():
-                    print(f"{Colors.DIM_GREEN}✓ Found {len(vessels)} vessel(s){Colors.RESET}")
-                else:
-                    print(f"✓ Found {len(vessels)} vessel(s)")
-                print()
+                self._append_output(output)
+                self.last_operation = f"✓ Found {len(vessels)} vessel(s)"
             else:
-                if Colors.supports_color():
-                    print(f"{Colors.DIM_RED}No vessels found matching: {params['name']}{Colors.RESET}")
-                else:
-                    print(f"No vessels found matching: {params['name']}")
-                print()
+                search_term = params.get('imo') or params.get('name')
+                self._append_output(f"No vessels found matching: {search_term}")
+                self.last_operation = "✗ No vessels found"
 
         except Exception as e:
-            if Colors.supports_color():
-                print(f"{Colors.DIM_RED}Error: {e}{Colors.RESET}")
-            else:
-                print(f"Error: {e}")
-            print()
+            self._append_output(f"Error: {e}")
+            self.last_operation = "✗ Error"
 
-    def do_fleet(self, line: str):
-        """
-        Get fleet information for a company
-        Usage: fleet /company "company name" [/format table|json|csv]
+    def _cmd_fleet(self, args: str):
+        """Handle fleet command"""
+        self._append_output("Fleet command - to be implemented")
 
-        Examples:
-          fleet /company "MAERSK LINE"
-          fleet /company "MSC" /format json
-        """
-        if not line.strip():
-            self.help_fleet()
-            return
+    def _cmd_batch(self, args: str):
+        """Handle batch command"""
+        self._append_output("Batch command - to be implemented")
 
-        expected_params = {'company': True, 'format': False, 'output': False}
-        params, all_required = self.parse_slash_command(line, expected_params)
+    def _cmd_format(self, args: str):
+        """Handle format command"""
+        args = args.strip().lower()
+        if args in ['table', 'json', 'csv']:
+            self.output_format = args
+            self.last_operation = f"Format set to {args}"
+            self._append_output(f"Default output format set to: {args}")
+        else:
+            self._append_output("Invalid format. Use: table, json, or csv")
 
-        if not all_required:
-            if Colors.supports_color():
-                print(f"{Colors.DIM_RED}Error: Missing required parameter /company{Colors.RESET}")
-            else:
-                print("Error: Missing required parameter /company")
-            self.help_fleet()
-            return
+    def _cmd_status(self, args: str):
+        """Handle status command"""
+        self.last_operation = ""
+        self._append_output("\nSession Status:")
+        status_text = 'Connected' if self.logged_in else 'Not connected'
+        self._append_output(f"  Authentication: {status_text}")
+        self._append_output(f"  Default Format: {self.output_format}")
+        self._append_output(f"  Debug Mode: {self.debug_mode}\n")
 
-        if not self.ensure_authenticated():
-            return
+    def _cmd_help(self, args: str):
+        """Handle help command"""
+        self._append_output("\n" + "=" * 60)
+        self._append_output("EQUASIS CLI - INTERACTIVE MODE HELP")
+        self._append_output("=" * 60)
+        self._append_output("\nCommands:")
+        self._append_output("  vessel /imo <NUMBER>     Get vessel information")
+        self._append_output("  search /name \"<NAME>\"    Search vessels by name")
+        self._append_output("  search /imo <NUMBER>     Search by IMO number")
+        self._append_output("  fleet /company \"<NAME>\"  Get fleet information")
+        self._append_output("  format <table|json|csv>  Set output format")
+        self._append_output("  status                   Show session status")
+        self._append_output("  clear                    Clear output")
+        self._append_output("  help                     Show this help")
+        self._append_output("  exit                     Exit interactive mode")
+        self._append_output("\nKeyboard shortcuts:")
+        self._append_output("  ?              Show quick help")
+        self._append_output("  Up/Down        Navigate command history")
+        self._append_output("  Page Up/Down   Scroll output")
+        self._append_output("  Shift+Up/Down  Scroll output (one line)")
+        self._append_output("  Ctrl+C         Cancel current input")
+        self._append_output("  Ctrl+D         Exit")
+        self._append_output("=" * 60 + "\n")
 
-        output_format = params.get('format', self.output_format)
-        if output_format not in ['table', 'json', 'csv']:
-            if Colors.supports_color():
-                print(f"{Colors.DIM_RED}Error: Invalid format. Use table, json, or csv{Colors.RESET}")
-            else:
-                print("Error: Invalid format. Use table, json, or csv")
-            return
+    def start(self):
+        """Start the interactive shell"""
+        # Redirect ALL logging to our output buffer instead of console
+        class OutputBufferHandler(logging.Handler):
+            def __init__(self, shell):
+                super().__init__()
+                self.shell = shell
 
+            def emit(self, record):
+                try:
+                    msg = self.format(record)
+                    self.shell._append_output(msg)
+                except:
+                    pass  # Silently fail if we can't append
+
+        # Remove ALL existing handlers from root logger and add our custom one
+        root_logger = logging.getLogger()
+        root_logger.handlers = []
+        root_logger.addHandler(OutputBufferHandler(self))
+        root_logger.setLevel(logging.WARNING)
+
+        # Also set client logger specifically
+        client_logger = logging.getLogger('equasis_cli.client')
+        client_logger.handlers = []
+        client_logger.addHandler(OutputBufferHandler(self))
+        client_logger.setLevel(logging.WARNING)
+
+        # Show banner in output buffer
+        banner_text = get_interactive_banner()
+        self._append_output(banner_text)
+
+        # Run the application
         try:
-            if Colors.supports_color():
-                print(f"{Colors.DIM}Fetching fleet data for '{params['company']}'...{Colors.RESET}")
-            else:
-                print(f"Fetching fleet data for '{params['company']}'...")
+            self.app.run()
+        except KeyboardInterrupt:
+            pass
+        except EOFError:
+            pass
 
-            fleet = self.client.get_fleet_info(params['company'])
+        self._append_output("\nGoodbye!")
 
-            if fleet:
-                print()
-                output = self.formatter.format_fleet_info(fleet, output_format)
-                print(output)
 
-                if Colors.supports_color():
-                    print(f"{Colors.DIM_GREEN}✓ Fleet lookup completed{Colors.RESET}")
-                else:
-                    print("✓ Fleet lookup completed")
-                print()
-            else:
-                if Colors.supports_color():
-                    print(f"{Colors.DIM_RED}No fleet found for company: {params['company']}{Colors.RESET}")
-                else:
-                    print(f"No fleet found for company: {params['company']}")
-                print()
+def main():
+    """Entry point for interactive shell"""
+    shell = InteractiveShell()
+    shell.start()
 
-        except Exception as e:
-            if Colors.supports_color():
-                print(f"{Colors.DIM_RED}Error: {e}{Colors.RESET}")
-            else:
-                print(f"Error: {e}")
-            print()
 
-    def do_batch(self, line: str):
-        """
-        Process multiple vessels or companies in batch
-        Usage: batch /imos "IMO1,IMO2,IMO3" [/format table|json|csv] [/output filename]
-               batch /file filename.txt [/format table|json|csv] [/output filename]
-               batch /companies "Company1,Company2,Company3" [/format table|json|csv] [/output filename]
-               batch /company-file companies.txt [/format table|json|csv] [/output filename]
-
-        Examples:
-          batch /imos "9074729,8515128,9632179"
-          batch /file fleet_imos.txt /format json /output results.json
-          batch /companies "MSC,MAERSK LINE,COSCO"
-          batch /company-file major_carriers.txt /format csv /output fleet_analysis.csv
-        """
-        if not line.strip():
-            self.help_batch()
-            return
-
-        expected_params = {'imos': False, 'file': False, 'companies': False, 'company-file': False, 'format': False, 'output': False}
-        params, _ = self.parse_slash_command(line, expected_params)
-
-        # Check for valid parameter combinations
-        vessel_params = ['imos', 'file']
-        company_params = ['companies', 'company-file']
-
-        vessel_provided = any(param in params for param in vessel_params)
-        company_provided = any(param in params for param in company_params)
-
-        if not vessel_provided and not company_provided:
-            if Colors.supports_color():
-                print(f"{Colors.DIM_RED}Error: Either vessel parameters (/imos, /file) or company parameters (/companies, /company-file) are required{Colors.RESET}")
-            else:
-                print("Error: Either vessel parameters (/imos, /file) or company parameters (/companies, /company-file) are required")
-            self.help_batch()
-            return
-
-        if vessel_provided and company_provided:
-            if Colors.supports_color():
-                print(f"{Colors.DIM_RED}Error: Cannot mix vessel and company parameters{Colors.RESET}")
-            else:
-                print("Error: Cannot mix vessel and company parameters")
-            return
-
-        # Check for conflicting parameters within each type
-        if sum(1 for param in vessel_params if param in params) > 1:
-            if Colors.supports_color():
-                print(f"{Colors.DIM_RED}Error: Cannot use both /imos and /file parameters{Colors.RESET}")
-            else:
-                print("Error: Cannot use both /imos and /file parameters")
-            return
-
-        if sum(1 for param in company_params if param in params) > 1:
-            if Colors.supports_color():
-                print(f"{Colors.DIM_RED}Error: Cannot use both /companies and /company-file parameters{Colors.RESET}")
-            else:
-                print("Error: Cannot use both /companies and /company-file parameters")
-            return
-
-        if not self.ensure_authenticated():
-            return
-
-        # Handle output parameters
-        output_format, output_file = self._handle_output_params(params)
-        if output_format is None:
-            return
-
-        # Determine processing type and get data list
-        if vessel_provided:
-            # Process vessels
-            imo_list = []
-            if 'imos' in params:
-                # Parse comma-separated IMOs
-                imo_list = [imo.strip() for imo in params['imos'].split(',')]
-            elif 'file' in params:
-                # Read IMOs from file
-                imo_list = self._read_list_from_file(params['file'], "IMO numbers")
-                if imo_list is None:  # Error occurred
-                    return
-
-            if not imo_list:
-                if Colors.supports_color():
-                    print(f"{Colors.DIM_RED}Error: No IMO numbers to process{Colors.RESET}")
-                else:
-                    print("Error: No IMO numbers to process")
-                return
-
-            self._process_vessel_batch(imo_list, output_format, output_file)
-
-        elif company_provided:
-            # Process companies
-            company_list = []
-            if 'companies' in params:
-                # Parse comma-separated companies
-                company_list = [company.strip() for company in params['companies'].split(',')]
-            elif 'company-file' in params:
-                # Read companies from file
-                company_list = self._read_list_from_file(params['company-file'], "company names")
-                if company_list is None:  # Error occurred
-                    return
-
-            if not company_list:
-                if Colors.supports_color():
-                    print(f"{Colors.DIM_RED}Error: No company names to process{Colors.RESET}")
-                else:
-                    print("Error: No company names to process")
-                return
-
-            self._process_company_batch(company_list, output_format, output_file)
-
-    def _read_list_from_file(self, filename: str, data_type: str):
-        """Read a list of items from file, return None on error"""
-        try:
-            item_list = []
-            with open(filename, 'r') as f:
-                for line in f:
-                    line = line.strip()
-                    # Skip empty lines and comments
-                    if line and not line.startswith('#'):
-                        item_list.append(line)
-            return item_list
-        except FileNotFoundError:
-            if Colors.supports_color():
-                print(f"{Colors.DIM_RED}Error: File not found: {filename}{Colors.RESET}")
-            else:
-                print(f"Error: File not found: {filename}")
-            return None
-        except Exception as e:
-            if Colors.supports_color():
-                print(f"{Colors.DIM_RED}Error reading file: {e}{Colors.RESET}")
-            else:
-                print(f"Error reading file: {e}")
-            return None
-
-    def _process_vessel_batch(self, imo_list, output_format, output_file):
-        """Process batch of vessel IMO numbers"""
-        # Progress callback function for vessels
-        def progress_callback(current, total, imo, status):
-            if Colors.supports_color():
-                if status == "processing":
-                    print(f"{Colors.DIM}[{current}/{total}] Processing IMO {imo}...{Colors.RESET}")
-                elif status == "success":
-                    print(f"{Colors.DIM_GREEN}[{current}/{total}] ✓ IMO {imo} retrieved{Colors.RESET}")
-                elif status == "not_found":
-                    print(f"{Colors.DIM_YELLOW}[{current}/{total}] ⚠ IMO {imo} not found{Colors.RESET}")
-                elif status == "error":
-                    print(f"{Colors.DIM_RED}[{current}/{total}] ✗ IMO {imo} error{Colors.RESET}")
-            else:
-                if status == "processing":
-                    print(f"[{current}/{total}] Processing IMO {imo}...")
-                elif status == "success":
-                    print(f"[{current}/{total}] ✓ IMO {imo} retrieved")
-                elif status == "not_found":
-                    print(f"[{current}/{total}] ⚠ IMO {imo} not found")
-                elif status == "error":
-                    print(f"[{current}/{total}] ✗ IMO {imo} error")
-
-        try:
-            if Colors.supports_color():
-                print(f"{Colors.DIM}Starting batch processing of {len(imo_list)} vessels...{Colors.RESET}")
-            else:
-                print(f"Starting batch processing of {len(imo_list)} vessels...")
-            print()
-
-            # Process batch with progress callback
-            results = self.client.search_vessels_by_imo_batch(
-                imo_list,
-                progress_callback=progress_callback,
-                stop_on_error=False
-            )
-
-            print()
-            output = self.formatter.format_batch_vessel_info(results, output_format)
-            self._save_or_print_output(output, output_file, "Vessel Batch")
-
-            # Summary
-            successful = sum(1 for r in results if r.success)
-            if Colors.supports_color():
-                print(f"{Colors.DIM_GREEN}✓ Vessel batch processing completed: {successful}/{len(results)} successful{Colors.RESET}")
-            else:
-                print(f"✓ Vessel batch processing completed: {successful}/{len(results)} successful")
-            print()
-
-        except Exception as e:
-            if Colors.supports_color():
-                print(f"{Colors.DIM_RED}Error: {e}{Colors.RESET}")
-            else:
-                print(f"Error: {e}")
-            print()
-
-    def _process_company_batch(self, company_list, output_format, output_file):
-        """Process batch of company names"""
-        # Progress callback function for companies
-        def progress_callback(current, total, company, status):
-            if Colors.supports_color():
-                if status == "processing":
-                    print(f"{Colors.DIM}[{current}/{total}] Processing company {company}...{Colors.RESET}")
-                elif status == "success":
-                    print(f"{Colors.DIM_GREEN}[{current}/{total}] ✓ {company} fleet retrieved{Colors.RESET}")
-                elif status == "not_found":
-                    print(f"{Colors.DIM_YELLOW}[{current}/{total}] ⚠ {company} not found{Colors.RESET}")
-                elif status == "error":
-                    print(f"{Colors.DIM_RED}[{current}/{total}] ✗ {company} error{Colors.RESET}")
-            else:
-                if status == "processing":
-                    print(f"[{current}/{total}] Processing company {company}...")
-                elif status == "success":
-                    print(f"[{current}/{total}] ✓ {company} fleet retrieved")
-                elif status == "not_found":
-                    print(f"[{current}/{total}] ⚠ {company} not found")
-                elif status == "error":
-                    print(f"[{current}/{total}] ✗ {company} error")
-
-        try:
-            if Colors.supports_color():
-                print(f"{Colors.DIM}Starting batch processing of {len(company_list)} companies...{Colors.RESET}")
-            else:
-                print(f"Starting batch processing of {len(company_list)} companies...")
-            print()
-
-            # Process batch with progress callback
-            results = self.client.search_companies_batch(
-                company_list,
-                progress_callback=progress_callback,
-                stop_on_error=False
-            )
-
-            print()
-            output = self.formatter.format_batch_fleet_info(results, output_format)
-            self._save_or_print_output(output, output_file, "Company Batch")
-
-            # Summary
-            successful = sum(1 for r in results if r.success)
-            total_vessels = sum(r.fleet_data.total_vessels for r in results if r.success and r.fleet_data)
-            if Colors.supports_color():
-                print(f"{Colors.DIM_GREEN}✓ Company batch processing completed: {successful}/{len(results)} companies successful ({total_vessels:,} total vessels){Colors.RESET}")
-            else:
-                print(f"✓ Company batch processing completed: {successful}/{len(results)} companies successful ({total_vessels:,} total vessels)")
-            print()
-
-        except Exception as e:
-            if Colors.supports_color():
-                print(f"{Colors.DIM_RED}Error: {e}{Colors.RESET}")
-            else:
-                print(f"Error: {e}")
-            print()
-
-    def do_format(self, line: str):
-        """
-        Set default output format
-        Usage: format table|json|csv
-
-        Examples:
-          format json
-          format table
-        """
-        line = line.strip().lower()
-        if line in ['table', 'json', 'csv']:
-            self.output_format = line
-            if Colors.supports_color():
-                print(f"{Colors.DIM_GREEN}Default output format set to: {line}{Colors.RESET}")
-            else:
-                print(f"Default output format set to: {line}")
-        else:
-            if Colors.supports_color():
-                print(f"{Colors.DIM_RED}Invalid format. Use: table, json, or csv{Colors.RESET}")
-            else:
-                print("Invalid format. Use: table, json, or csv")
-
-    def do_output(self, line: str):
-        """
-        Information about saving output to files
-        Usage: Use /output parameter with vessel, search, or fleet commands
-
-        Examples:
-          vessel /imo 9074729 /output vessel_data.json
-          search /name "MAERSK" /output results.csv
-          fleet /company "MSC" /output fleet.json
-
-        You can also use /output to specify format:
-          vessel /imo 9074729 /output json
-        """
-        if Colors.supports_color():
-            print(f"""
-{Colors.DIM_CYAN}output{Colors.RESET} - Save command results to files
-
-{Colors.DIM}Usage:{Colors.RESET}
-  Any command can use the /output parameter:
-    command [parameters] /output filename.ext
-    command [parameters] /output format
-
-{Colors.DIM}Examples:{Colors.RESET}
-  vessel /imo 9074729 /output vessel_data.json
-  search /name "MAERSK" /output results.csv
-  fleet /company "MSC" /output fleet.json
-  vessel /imo 9074729 /output json
-
-{Colors.DIM}Notes:{Colors.RESET}
-  • File extension determines format (.json, .csv)
-  • Use without extension to specify format only
-  • Combine with /format for explicit format control
-""")
-        else:
-            print("""
-output - Save command results to files
-
-Usage:
-  Any command can use the /output parameter:
-    command [parameters] /output filename.ext
-    command [parameters] /output format
-
-Examples:
-  vessel /imo 9074729 /output vessel_data.json
-  search /name "MAERSK" /output results.csv
-  fleet /company "MSC" /output fleet.json
-  vessel /imo 9074729 /output json
-
-Notes:
-  • File extension determines format (.json, .csv)
-  • Use without extension to specify format only
-  • Combine with /format for explicit format control
-""")
-
-    def do_clear(self, line: str):
-        """Clear the screen"""
-        os.system('clear' if os.name == 'posix' else 'cls')
-
-    def do_status(self, line: str):
-        """Show current session status"""
-        print()
-        if Colors.supports_color():
-            print(f"{Colors.DIM_CYAN}Session Status:{Colors.RESET}")
-            print(f"  Authentication: {Colors.DIM_GREEN + 'Connected' + Colors.RESET if self.logged_in else Colors.DIM_RED + 'Not connected' + Colors.RESET}")
-            print(f"  Default Format: {Colors.DIM_WHITE + self.output_format + Colors.RESET}")
-            print(f"  Debug Mode: {Colors.DIM_WHITE + str(self.debug_mode) + Colors.RESET}")
-        else:
-            print("Session Status:")
-            print(f"  Authentication: {'Connected' if self.logged_in else 'Not connected'}")
-            print(f"  Default Format: {self.output_format}")
-            print(f"  Debug Mode: {self.debug_mode}")
-        print()
-
-    def do_exit(self, line: str):
-        """Exit the interactive shell"""
-        if Colors.supports_color():
-            print(f"{Colors.DIM}Goodbye!{Colors.RESET}")
-        else:
-            print("Goodbye!")
-        return True
-
-    def do_quit(self, line: str):
-        """Exit the interactive shell"""
-        return self.do_exit(line)
-
-    def do_EOF(self, line: str):
-        """Handle Ctrl+D"""
-        print()  # New line after ^D
-        return self.do_exit(line)
-
-    def help_vessel(self):
-        """Help for vessel command"""
-        if Colors.supports_color():
-            print(f"""
-{Colors.DIM_CYAN}vessel{Colors.RESET} - Get comprehensive vessel information
-
-{Colors.DIM}Usage:{Colors.RESET}
-  vessel /imo <IMO_NUMBER> [/format table|json|csv] [/output filename]
-
-{Colors.DIM}Examples:{Colors.RESET}
-  vessel /imo 9074729
-  vessel /imo 8515128 /format json
-  vessel /imo 9074729 /output vessel_data.json
-
-{Colors.DIM}Parameters:{Colors.RESET}
-  /imo      IMO number (required)
-  /format   Output format: table, json, csv (optional)
-  /output   Save to file or specify format (optional)
-""")
-        else:
-            print("""
-vessel - Get comprehensive vessel information
-
-Usage:
-  vessel /imo <IMO_NUMBER> [/format table|json|csv] [/output filename]
-
-Examples:
-  vessel /imo 9074729
-  vessel /imo 8515128 /format json
-  vessel /imo 9074729 /output vessel_data.json
-
-Parameters:
-  /imo      IMO number (required)
-  /format   Output format: table, json, csv (optional)
-  /output   Save to file or specify format (optional)
-""")
-
-    def help_search(self):
-        """Help for search command"""
-        if Colors.supports_color():
-            print(f"""
-{Colors.DIM_CYAN}search{Colors.RESET} - Search for vessels by name
-
-{Colors.DIM}Usage:{Colors.RESET}
-  search /name "<VESSEL_NAME>" [/format table|json|csv]
-
-{Colors.DIM}Examples:{Colors.RESET}
-  search /name "MAERSK"
-  search /name "EVER GIVEN" /format json
-
-{Colors.DIM}Parameters:{Colors.RESET}
-  /name     Vessel name to search for (required)
-  /format   Output format: table, json, csv (optional)
-""")
-        else:
-            print("""
-search - Search for vessels by name
-
-Usage:
-  search /name "<VESSEL_NAME>" [/format table|json|csv]
-
-Examples:
-  search /name "MAERSK"
-  search /name "EVER GIVEN" /format json
-
-Parameters:
-  /name     Vessel name to search for (required)
-  /format   Output format: table, json, csv (optional)
-""")
-
-    def help_fleet(self):
-        """Help for fleet command"""
-        if Colors.supports_color():
-            print(f"""
-{Colors.DIM_CYAN}fleet{Colors.RESET} - Get fleet information for a company
-
-{Colors.DIM}Usage:{Colors.RESET}
-  fleet /company "<COMPANY_NAME>" [/format table|json|csv]
-
-{Colors.DIM}Examples:{Colors.RESET}
-  fleet /company "MAERSK LINE"
-  fleet /company "MSC" /format json
-
-{Colors.DIM}Parameters:{Colors.RESET}
-  /company  Company name (required)
-  /format   Output format: table, json, csv (optional)
-""")
-        else:
-            print("""
-fleet - Get fleet information for a company
-
-Usage:
-  fleet /company "<COMPANY_NAME>" [/format table|json|csv]
-
-Examples:
-  fleet /company "MAERSK LINE"
-  fleet /company "MSC" /format json
-
-Parameters:
-  /company  Company name (required)
-  /format   Output format: table, json, csv (optional)
-""")
-
-    def help_batch(self):
-        """Help for batch command"""
-        if Colors.supports_color():
-            print(f"""
-{Colors.DIM_CYAN}batch{Colors.RESET} - Process multiple vessels in batch
-
-{Colors.DIM}Usage:{Colors.RESET}
-  batch /imos "IMO1,IMO2,IMO3" [/format table|json|csv] [/output filename]
-  batch /file filename.txt [/format table|json|csv] [/output filename]
-
-{Colors.DIM}Examples:{Colors.RESET}
-  batch /imos "9074729,8515128,9632179"
-  batch /file fleet_imos.txt /format json
-  batch /imos "9074729,8515128" /output batch_results.csv
-  batch /file my_vessels.txt /output results.json
-
-{Colors.DIM}Parameters:{Colors.RESET}
-  /imos     Comma-separated IMO numbers (use this OR /file)
-  /file     File containing IMO numbers, one per line (use this OR /imos)
-  /format   Output format: table, json, csv (optional)
-  /output   Save to file (optional)
-
-{Colors.DIM}File Format:{Colors.RESET}
-  Text file with one IMO per line
-  Lines starting with # are treated as comments
-  Empty lines are ignored
-
-{Colors.DIM}Example file content:{Colors.RESET}
-  # Fleet vessels
-  9074729
-  8515128
-  9632179
-""")
-        else:
-            print("""
-batch - Process multiple vessels in batch
-
-Usage:
-  batch /imos "IMO1,IMO2,IMO3" [/format table|json|csv] [/output filename]
-  batch /file filename.txt [/format table|json|csv] [/output filename]
-
-Examples:
-  batch /imos "9074729,8515128,9632179"
-  batch /file fleet_imos.txt /format json
-  batch /imos "9074729,8515128" /output batch_results.csv
-  batch /file my_vessels.txt /output results.json
-
-Parameters:
-  /imos     Comma-separated IMO numbers (use this OR /file)
-  /file     File containing IMO numbers, one per line (use this OR /imos)
-  /format   Output format: table, json, csv (optional)
-  /output   Save to file (optional)
-
-File Format:
-  Text file with one IMO per line
-  Lines starting with # are treated as comments
-  Empty lines are ignored
-
-Example file content:
-  # Fleet vessels
-  9074729
-  8515128
-  9632179
-""")
-
-    def default(self, line):
-        """Handle unknown commands"""
-        if Colors.supports_color():
-            print(f"{Colors.DIM_RED}Unknown command: {line.split()[0]}{Colors.RESET}")
-            print(f"{Colors.DIM}Type 'help' for available commands{Colors.RESET}")
-        else:
-            print(f"Unknown command: {line.split()[0]}")
-            print("Type 'help' for available commands")
-        print()
-
-    def help_help(self):
-        """Override help for help command to include batch"""
-        if Colors.supports_color():
-            print(f"""
-{Colors.DIM_CYAN}Available Commands:{Colors.RESET}
-
-  vessel    Get comprehensive vessel information by IMO
-  search    Search for vessels by name
-  fleet     Get fleet information for a company
-  batch     Process multiple vessels in batch
-  format    Set default output format
-  output    Information about saving output to files
-  status    Show current session status
-  clear     Clear the terminal screen
-  help      Show this help message or help for a specific command
-  exit      Exit the interactive shell
-
-{Colors.DIM}For detailed help on a specific command, type:{Colors.RESET}
-  help <command>
-
-{Colors.DIM}Example:{Colors.RESET}
-  help batch
-""")
-        else:
-            print("""
-Available Commands:
-
-  vessel    Get comprehensive vessel information by IMO
-  search    Search for vessels by name
-  fleet     Get fleet information for a company
-  batch     Process multiple vessels in batch
-  format    Set default output format
-  output    Information about saving output to files
-  status    Show current session status
-  clear     Clear the terminal screen
-  help      Show this help message or help for a specific command
-  exit      Exit the interactive shell
-
-For detailed help on a specific command, type:
-  help <command>
-
-Example:
-  help batch
-""")
+if __name__ == '__main__':
+    main()

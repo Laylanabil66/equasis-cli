@@ -15,6 +15,7 @@ local/
 debug_vessel_*.html
 CLAUDE.md
 .claude/
+docs/
 
 # Python cache and temporary files
 *.py[cod]

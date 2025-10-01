@@ -321,56 +321,377 @@ class EquasisClient:
         return self.get_comprehensive_vessel_info(imo)
 
     def search_vessel_by_name(self, name: str) -> List[SimpleVesselInfo]:
-        """Search for vessels by name"""
+        """
+        Search for vessels by name using general search endpoint
+
+        This uses the same search mechanism as company search,
+        which returns both ship and company results.
+        """
         if not self.logged_in and not self.login():
             return []
 
         try:
-            search_url = f"{self.base_url}/EquasisWeb/restricted/ShipInfo?fs=ShipList"
+            logger.info(f"Searching for vessels matching: {name}")
+            # Use general search endpoint (same as company search)
+            search_url = f"{self.base_url}/EquasisWeb/restricted/Search?fs=Search"
             search_data = {
-                'P_ENTSHIP': name,
-                'submit': 'Search'
+                'P_PAGE': '1',
+                'P_PAGE_COMP': '1',
+                'P_PAGE_SHIP': '1',
+                'P_ENTREE_ENTETE': name,
+                'P_ENTREE_ENTETE_HIDDEN': name
             }
 
             response = self._safe_post(search_url, data=search_data)
             time.sleep(1)
-            return self._parse_vessel_list(response.text)
+
+            vessels = self._parse_vessel_list(response.text)
+
+            if not vessels:
+                logger.warning(f"No vessels found matching: {name}")
+            else:
+                logger.info(f"Found {len(vessels)} vessels matching: {name}")
+
+            return vessels
 
         except Exception as e:
             logger.error(f"Error searching vessel by name {name}: {e}")
             return []
 
-    def get_fleet_info(self, company_identifier: str) -> Optional[FleetInfo]:
-        """Get fleet information for a company"""
+    def search_companies(self, company_identifier: str) -> List[dict]:
+        """
+        Search for companies by name, returns list of matching companies
+
+        Returns:
+            List of dicts with keys: p_comp, name, address
+        """
+        if not self.logged_in and not self.login():
+            return []
+
+        try:
+            logger.info(f"Searching for company: {company_identifier}")
+            search_url = f"{self.base_url}/EquasisWeb/restricted/Search?fs=Search"
+            search_data = {
+                'P_PAGE': '1',
+                'P_PAGE_COMP': '1',
+                'P_PAGE_SHIP': '1',
+                'P_ENTREE_ENTETE': company_identifier,
+                'P_ENTREE_ENTETE_HIDDEN': company_identifier
+            }
+
+            response = self._safe_post(search_url, data=search_data)
+            time.sleep(1)
+
+            # Parse search results to extract P_COMP IDs and company names
+            company_results = self._parse_company_search_results(response.text)
+
+            if not company_results:
+                logger.warning(f"No companies found matching: {company_identifier}")
+            else:
+                logger.info(f"Found {len(company_results)} companies matching: {company_identifier}")
+
+            return company_results
+
+        except Exception as e:
+            logger.error(f"Error searching for company {company_identifier}: {e}")
+            return []
+
+    def get_fleet_by_company_id(self, p_comp: str, company_name: str) -> Optional[FleetInfo]:
+        """
+        Get fleet information using P_COMP ID
+
+        Args:
+            p_comp: Company ID from Equasis
+            company_name: Company name for display
+
+        Returns:
+            FleetInfo object or None
+        """
         if not self.logged_in and not self.login():
             return None
 
         try:
-            # First search for company
-            company_url = f"{self.base_url}/EquasisWeb/restricted/CompanyInfo?fs=ShipInfo"
-            company_data = {
-                'P_ENTCOMP': company_identifier,
-                'submit': 'Search'
+            logger.info(f"Fetching fleet info for {company_name} (P_COMP={p_comp})")
+            fleet_url = f"{self.base_url}/EquasisWeb/restricted/FleetInfo?fs=CompanyInfo"
+            fleet_data = {
+                'P_PAGE': '1',
+                'P_COMP': p_comp,
+                'ongletActifSC': 'comp'
             }
 
-            response = self._safe_post(company_url, data=company_data)
+            response = self._safe_post(fleet_url, data=fleet_data)
             time.sleep(1)
-            return self._parse_fleet_info(response.text, company_identifier)
+
+            # Parse fleet info
+            return self._parse_fleet_info(response.text, company_name)
 
         except Exception as e:
-            logger.error(f"Error getting fleet info for {company_identifier}: {e}")
+            logger.error(f"Error getting fleet info for {company_name}: {e}")
             return None
 
+    def get_fleet_info(self, company_identifier: str) -> Optional[FleetInfo]:
+        """
+        Get fleet information for a company (convenience method - uses first match)
+        For interactive selection, use search_companies() then get_fleet_by_company_id()
+        """
+        company_results = self.search_companies(company_identifier)
+
+        if not company_results:
+            return None
+
+        # Use first match for backward compatibility
+        if len(company_results) > 1:
+            logger.info(f"Multiple companies found, using first match: {company_results[0]['name']}")
+
+        return self.get_fleet_by_company_id(
+            company_results[0]['p_comp'],
+            company_results[0]['name']
+        )
+
+    def _parse_company_search_results(self, html: str) -> List[dict]:
+        """
+        Parse company search results to extract P_COMP IDs and company names
+
+        Returns list of dicts with keys: p_comp, name, address
+        """
+        from bs4 import BeautifulSoup
+        import re
+
+        soup = BeautifulSoup(html, 'html.parser')
+        companies = []
+
+        # Find the company results div
+        company_div = soup.find('div', id='CompanyResultId')
+        if not company_div:
+            return companies
+
+        # Find the company table
+        table = company_div.find('table')
+        if not table:
+            return companies
+
+        tbody = table.find('tbody')
+        if not tbody:
+            return companies
+
+        # Parse each company row
+        # Structure: <tr><th><a onclick="...P_COMP.value='0310062'...">0310062</a></th><td>TORM A/S</td><td>Address...</td></tr>
+        for row in tbody.find_all('tr'):
+            try:
+                cells = row.find_all(['th', 'td'])
+                if len(cells) >= 2:
+                    # First cell is <th> with <a> tag containing onclick handler
+                    first_cell = cells[0]
+
+                    # Look for <a> tag with onClick attribute
+                    link = first_cell.find('a', attrs={'onClick': True})
+                    if not link:
+                        # Try lowercase onclick
+                        link = first_cell.find('a', attrs={'onclick': True})
+
+                    if link:
+                        onclick = link.get('onClick') or link.get('onclick', '')
+
+                        # Extract P_COMP value from onclick handler
+                        match = re.search(r"P_COMP\.value\s*=\s*['\"](\d+)['\"]", onclick)
+                        if match:
+                            p_comp = match.group(1)
+                            name = cells[1].get_text(strip=True) if len(cells) > 1 else ''
+                            address = cells[2].get_text(strip=True) if len(cells) > 2 else ''
+
+                            # Skip companies with empty names or address-only entries
+                            # (Equasis has responsive duplicate rows for mobile view)
+                            if name and not name.startswith('C/O:') and (',' in name and len(name) > 50 or address):
+                                companies.append({
+                                    'p_comp': p_comp,
+                                    'name': name,
+                                    'address': address
+                                })
+            except Exception as e:
+                logger.warning(f"Error parsing company row: {e}")
+                continue
+
+        # Deduplicate by P_COMP (Equasis has duplicate rows for responsive design)
+        seen_comps = set()
+        unique_companies = []
+        for company in companies:
+            if company['p_comp'] not in seen_comps:
+                seen_comps.add(company['p_comp'])
+                unique_companies.append(company)
+
+        return unique_companies
+
     def _parse_vessel_list(self, html: str) -> List[SimpleVesselInfo]:
-        """Parse vessel list from search results"""
-        # Similar parsing logic for multiple vessels
-        # Implementation depends on HTML structure
-        return []
+        """
+        Parse vessel list from search results using robust element-based parsing
+
+        Applies same principles as fleet parsing:
+        - Find IMO link first (most reliable)
+        - Normalize whitespace
+        - Position-based text extraction
+        """
+        from bs4 import BeautifulSoup
+        import re
+
+        soup = BeautifulSoup(html, 'html.parser')
+        vessels = []
+
+        # Find tables - ship results are in the first table
+        tables = soup.find_all('table', class_='table')
+        if not tables:
+            return vessels
+
+        # First table should be ship results
+        ship_table = tables[0]
+        tbody = ship_table.find('tbody')
+        if not tbody:
+            return vessels
+
+        # Parse each vessel row
+        # Structure may vary: check if first cell contains IMO in link or just text
+        for row in tbody.find_all('tr'):
+            try:
+                cells = row.find_all(['th', 'td'])
+                if len(cells) >= 6:
+                    # Try robust parsing (with IMO link) first
+                    first_cell = cells[0]
+                    imo_link = first_cell.find('a')
+
+                    if imo_link:
+                        # Robust parsing: IMO in link, vessel name after
+                        imo = imo_link.get_text(strip=True)
+
+                        # Validate IMO format
+                        if not imo.isdigit() or len(imo) != 7:
+                            # Fallback to simple text extraction
+                            imo = first_cell.get_text(strip=True)
+
+                        # Normalize whitespace and extract vessel name
+                        full_text = ' '.join(first_cell.get_text().split())
+                        if imo in full_text:
+                            imo_pos = full_text.find(imo)
+                            after_imo = full_text[imo_pos + len(imo):].strip()
+                            name = after_imo.lstrip(')').lstrip('(').strip()
+                        else:
+                            name = cells[1].get_text(strip=True) if len(cells) > 1 else ''
+
+                        # If name is empty, it's in next cell
+                        if not name and len(cells) > 1:
+                            name = cells[1].get_text(strip=True)
+                    else:
+                        # Simple parsing: no link structure
+                        imo = cells[0].get_text(strip=True)
+                        name = cells[1].get_text(strip=True)
+
+                    # Extract remaining fields with whitespace normalization
+                    vessel = SimpleVesselInfo(
+                        imo=imo,
+                        name=name,
+                        grt=' '.join(cells[2].get_text().split()),
+                        vessel_type=' '.join(cells[3].get_text().split()),
+                        year_built=' '.join(cells[4].get_text().split()),
+                        flag=' '.join(cells[5].get_text().split()),
+                        dwt=None,
+                        status=None
+                    )
+                    vessels.append(vessel)
+            except Exception as e:
+                logger.warning(f"Error parsing vessel row: {e}")
+                continue
+
+        # Deduplicate by IMO (handle responsive design duplicates)
+        seen_imos = set()
+        unique_vessels = []
+        for vessel in vessels:
+            if vessel.imo and vessel.imo not in seen_imos:
+                seen_imos.add(vessel.imo)
+                unique_vessels.append(vessel)
+
+        return unique_vessels
 
     def _parse_fleet_info(self, html: str, company: str) -> Optional[FleetInfo]:
-        """Parse fleet information from HTML"""
-        # Implementation depends on HTML structure
-        return None
+        """Parse fleet information from Fleet Info page"""
+        from bs4 import BeautifulSoup
+        import re
+
+        soup = BeautifulSoup(html, 'html.parser')
+
+        # Find tables
+        tables = soup.find_all('table', class_='table')
+        if not tables:
+            logger.warning(f"No tables found in fleet info for {company}")
+            return None
+
+        # Parse the fleet table (should be first table)
+        fleet_table = tables[0]
+        tbody = fleet_table.find('tbody')
+        if not tbody:
+            logger.warning(f"No tbody found in fleet table for {company}")
+            return None
+
+        vessels = []
+
+        # Parse each vessel row
+        # Fleet table structure: "(IMO)\nVessel Name", GRT, Type, Year, Flag, Class, Detentions..., Acting as, Details
+        for row in tbody.find_all('tr'):
+            try:
+                cells = row.find_all(['th', 'td'])
+                if len(cells) >= 6:
+                    # Strategy: Find the IMO link in the first cell, then extract vessel name from remaining text
+                    first_cell = cells[0]
+
+                    # Find the <a> tag with IMO - it contains the IMO number
+                    imo_link = first_cell.find('a')
+                    if not imo_link:
+                        continue  # Skip rows without IMO link
+
+                    # Extract IMO from the link text (most reliable)
+                    imo = imo_link.get_text(strip=True)
+
+                    # Validate it's a 7-digit IMO
+                    if not imo.isdigit() or len(imo) != 7:
+                        continue
+
+                    # Get all text from the cell and normalize whitespace
+                    full_text = ' '.join(first_cell.get_text().split())
+
+                    # Remove the IMO and parentheses to get vessel name
+                    # The pattern is usually: "( IMO ) Vessel Name"
+                    # After normalization: "(IMO) Vessel Name" or "( IMO ) Vessel Name"
+                    # Strategy: Split by IMO, take everything after it, remove closing paren
+                    if imo in full_text:
+                        # Find position of IMO and take everything after
+                        imo_pos = full_text.find(imo)
+                        after_imo = full_text[imo_pos + len(imo):].strip()
+                        # Remove leading/trailing parentheses and whitespace
+                        name_text = after_imo.lstrip(')').strip()
+                    else:
+                        name_text = ''
+
+                    vessel = SimpleVesselInfo(
+                        imo=imo,
+                        name=name_text,
+                        grt=cells[1].get_text(strip=True),
+                        vessel_type=cells[2].get_text(strip=True),
+                        year_built=cells[3].get_text(strip=True),
+                        flag=cells[4].get_text(strip=True),
+                        dwt=None,
+                        status=None
+                    )
+                    vessels.append(vessel)
+            except Exception as e:
+                logger.warning(f"Error parsing fleet vessel row: {e}")
+                continue
+
+        if not vessels:
+            logger.warning(f"No vessels found in fleet for {company}")
+            return None
+
+        return FleetInfo(
+            company_name=company,
+            vessels=vessels,
+            total_vessels=len(vessels)
+        )
 
     def search_vessels_by_imo_batch(self, imos: List[str],
                                    progress_callback=None,

@@ -238,26 +238,91 @@ Simply type `equasis` with no arguments to enter interactive mode:
 equasis
 ```
 
-This launches a modern REPL-style interface where you can run multiple commands without re-authentication:
+This launches a **modern professional TUI** with advanced features:
 
+**TUI Features:**
+- 🎯 **Fixed input area** at bottom (doesn't scroll away)
+- 📊 **Persistent status bar** showing connection, format, and operation status
+- 🎨 **Atom One Dark color scheme** (professional cyan-to-blue gradient banner)
+- ✨ **Context-aware slash menus** - Primary commands without `/`, parameters with `/`
+- 🔍 **Real-time filtering** - Type `/se` to filter to "search"
+- ❓ **Ephemeral help menu** - Press `?` to toggle keyboard shortcuts
+- 📜 **Vim/Less-style scrolling** - Press `Esc` for scroll mode, `i` to return
+- ⏳ **Animated loading indicators** - Spinner with shine effect during operations
+- 🧹 **Custom styled output** - User prompts in grey, results in default color
+- ⌨️ **Column-aligned menus** - Professional layout with descriptions aligned
+
+**Example session:**
 ```
+────────────────────────────────────────
 > vessel /imo 9074729
+────────────────────────────────────────
+[vessel data table appears here]
+────────────────────────────────────────
+● Connected • Format: table • ✓ Vessel 9074729 found
+
+────────────────────────────────────────
 > search /name "MAERSK"
-> fleet /company "MSC"
-> format json
-> status
-> help
+────────────────────────────────────────
+[search results appear here]
+────────────────────────────────────────
+● Connected • Format: table • ✓ Found 45 vessel(s)
 > exit
 ```
 
-**Interactive Mode Features:**
+**Interactive Commands:**
+```bash
+# Vessel lookup
+vessel /imo 9074729
+vessel /imo 9074729 /format json
+vessel /imo 9074729 /output vessel_data.json
+
+# Vessel search
+search /name "MAERSK"
+search /imo 9074729               # Search by IMO (useful for companies)
+search /name "EVER GIVEN" /format json
+
+# Fleet information
+fleet /company "MSC"
+fleet /company "MAERSK LINE" /format csv
+
+# Batch processing
+batch /imos "9074729,8515128,9632179"
+batch /file fleet_imos.txt /format json /output results.json
+batch /companies "MSC,MAERSK,COSCO" /progress
+
+# Utility commands
+format json          # Set default output format
+status              # Show connection status
+clear               # Clear screen
+?                   # Quick help (clears screen first)
+help                # Full command list
+help vessel         # Command-specific help
+exit                # Exit interactive mode
+```
+
+**Keyboard Shortcuts:**
+- **`?`** - Toggle help menu (keyboard shortcuts overlay)
+- **`/`** - Show context-aware command/parameter menu with filtering
+- **`Tab`** - Select from menu (replaces from last `/` for parameters)
+- **`Enter`** - Execute command
+- **`Up/Down`** - Navigate menu / scroll output / command history (context-aware)
+- **`Esc`** - Enter scroll mode (navigate output buffer)
+- **`i`** - Return to input mode from scroll mode
+- **`Ctrl+K/J`** - Quick scroll up/down (5 lines)
+- **`Page Up/Down`**, **`Shift+Up/Down`** - Scroll output buffer
+- **`Ctrl+C`** - Cancel input and hide menus
+- **`Ctrl+D`** - Exit application
+
+**Interactive Mode Benefits:**
 - **Persistent Session**: Authenticate once, run multiple queries
-- **Modern Syntax**: Use `/param value` instead of `--param value`
+- **Modern Syntax**: Use `/param value` slash command syntax
 - **Fast Queries**: No re-authentication between commands
-- **Built-in Help**: Type `help` to see all commands
+- **Context-Aware Menus**: Commands without `/`, parameters with `/`
 - **Format Control**: Set default output format or override per-command
 - **File Output**: Save results with `/output filename.ext`
-- **Batch Processing**: Process multiple vessels or companies with `batch` command
+- **Batch Processing**: Process multiple vessels or companies efficiently
+- **Scroll Mode**: Vim/less-style navigation for reviewing output
 
 ### Traditional CLI Mode
 
@@ -581,7 +646,7 @@ You'll see the banner and enter interactive mode:
          |__|
 
             Maritime Intelligence Tool
-                            Version 1.0.0
+                            Version 2.0.0
 
 Type 'help' for available commands or 'exit' to quit.
 Use /output with any command to save results to a file.
